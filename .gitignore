@@ -1,0 +1,14 @@
+# runtime hand-off file — auto-created by bridge.py / push.py, can hold chat text
+feed.json
+
+# python
+__pycache__/
+*.py[cod]
+
+# dev tooling (screenshot/preview helpers, if you add any back)
+node_modules/
+package-lock.json
+
+# os
+.DS_Store
+Thumbs.db

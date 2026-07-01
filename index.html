@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>claude · companion</title>
+<style>
+  :root{ --clay:#CC785C; --ink:#15120f; --bg:#161514; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:var(--bg);font-family:ui-sans-serif,system-ui,sans-serif}
+  #app{position:relative;width:100vw;height:100vh;overflow:hidden;cursor:pointer}
+  #scene{display:block;position:absolute;inset:0}
+  #title{position:absolute;top:14px;left:18px;color:#e8e6df;opacity:.7;font-size:13px;letter-spacing:.3px;pointer-events:none}
+  #title b{font-weight:700}
+  #theme{position:absolute;top:14px;right:18px;color:#cbb9a9;opacity:0;font-size:12px;
+    font-family:ui-monospace,monospace;transition:opacity .4s;pointer-events:none}
+  #theme.show{opacity:.85}
+  #hint{position:absolute;bottom:12px;left:18px;color:#e8e6df;opacity:.28;font-size:11px;pointer-events:none}
+  #grain{position:absolute;inset:0;pointer-events:none;mix-blend-mode:soft-light;opacity:.05;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    animation:boil .14s steps(1) infinite}
+  @keyframes boil{0%{background-position:0 0}50%{background-position:53px 31px}100%{background-position:17px 71px}}
+  #bubble{position:absolute;max-width:240px;padding:9px 13px;border-radius:12px;
+    background:rgba(232,230,223,.97);border:1px solid #d9d6cc;color:var(--ink);
+    font-family:"Tiempos Text",Lora,Georgia,serif;font-size:13.5px;line-height:1.4;
+    box-shadow:0 6px 20px rgba(0,0,0,.4);opacity:0;transform:translateY(4px) scale(.96);
+    transition:opacity .18s,transform .18s;pointer-events:none;will-change:left,top}
+  #bubble.show{opacity:1;transform:none}
+  #bubble::after{content:"";position:absolute;bottom:-7px;left:var(--tail,24px);
+    border:7px solid transparent;border-top-color:rgba(232,230,223,.97);border-bottom:0}
+  @media (prefers-reduced-motion:reduce){#grain{animation:none}}
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+  <div id="grain"></div>
+  <div id="title"><b>claude</b> · companion</div>
+  <div id="theme"></div>
+  <div id="hint">click to change theme</div>
+  <div id="bubble"></div>
+</div>
+
+<script>
+"use strict";
+/* ===================== CONFIG ===================== */
+const CFG = {
+  SCALE:5, DOT_PITCH:6, DOT_SIZE:2.2, BASE_DOT:0.06,
+  MAX_SPEED:42, SLOW_RADIUS:90, ARRIVE:8, MARGIN:90,
+  STEP_FREQ:7, BOB_AMP:3.2, WADDLE:0.05,
+  PAUSE:[0.8,3.0], BUBBLE_EVERY:[9000,17000], BUBBLE_HOLD:[2600,4200],
+};
+const IDLE_LINES=[
+  "still here with you","nice and steady…","this one's for thinking","just vibing, you build",
+  "been at it a while — water?","press play and keep building","i'm around if you need","good pace today",
+];
+const REDUCE=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t, rand=(a,b)=>a+Math.random()*(b-a);
+const ri=(a,b)=>Math.floor(rand(a,b+1));
+
+/* ===================== canvas ===================== */
+const cv=document.getElementById("scene"), ctx=cv.getContext("2d");
+let W=0,H=0,DPR=1;
+let bg=document.createElement("canvas"), bgx=bg.getContext("2d");
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+"px"; cv.style.height=H+"px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  bg.width=W*DPR; bg.height=H*DPR; bgx.setTransform(DPR,0,0,DPR,0,0);
+  buildBg();
+  c.x=clamp(c.x,CFG.MARGIN,W-CFG.MARGIN); c.y=clamp(c.y,CFG.MARGIN,H-CFG.MARGIN); pickTarget();
+}
+
+/* ===================== scene primitives (structured dot-art) ===================== */
+function box(g,x,y,w,h){ g.strokeRect(x,y,w,h); }
+function hl(g,x1,x2,y){ g.beginPath(); g.moveTo(x1,y); g.lineTo(x2,y); g.stroke(); }
+function vl(g,x,y1,y2){ g.beginPath(); g.moveTo(x,y1); g.lineTo(x,y2); g.stroke(); }
+// a bookshelf/cabinet: outline + shelves + book spines + box items
+function shelf(g,x,y,w,h,rows){
+  g.lineWidth=3; box(g,x,y,w,h); const rh=h/rows;
+  for(let r=1;r<rows;r++) hl(g,x,x+w,y+r*rh);
+  for(let r=0;r<rows;r++){ let bx=x+8;
+    while(bx<x+w-14){ const bw=rand(8,18), bh=rand(rh*0.45,rh*0.82), by=y+(r+1)*rh-bh-3;
+      if(Math.random()<0.68) g.fillRect(bx,by,bw,bh); else box(g,bx,by,bw,bh); bx+=bw+rand(3,7); } }
+}
+// concentric round window / clock
+function ring(g,cx,cy,r){ g.lineWidth=3; for(let rr=r;rr>r*0.26;rr-=Math.max(8,r*0.14)){ g.beginPath(); g.arc(cx,cy,rr,0,7); g.stroke(); } g.beginPath(); g.arc(cx,cy,4,0,7); g.fill(); }
+// framed picture
+function frame(g,x,y,w,h){ g.lineWidth=3; box(g,x,y,w,h); box(g,x+5,y+5,w-10,h-10); }
+// fuller potted fern: trapezoid pot + fronds with leaflets along each stem
+function plant(g,x,baseY,h,spread,leaves){
+  g.lineWidth=3; const pw=spread*0.72, ph=h*0.16, topY=baseY-ph;
+  g.beginPath(); g.moveTo(x-pw/2,topY); g.lineTo(x+pw/2,topY);
+  g.lineTo(x+pw*0.40,baseY); g.lineTo(x-pw*0.40,baseY); g.closePath(); g.stroke();  // pot
+  hl(g,x-pw/2,x+pw/2,topY+ph*0.34);                                                  // pot rim band
+  for(let i=0;i<leaves;i++){
+    const a=-1.5708+((i-(leaves-1)/2)/Math.max(1,leaves-1))*1.8, len=h*rand(0.6,0.96);
+    const ex=x+Math.cos(a)*len*0.62, ey=topY+Math.sin(a)*len;
+    g.lineWidth=2.5; vl_(g,x,topY,ex,ey);                                            // frond stem
+    const perp=a+1.5708, ll=7;
+    for(let s=1;s<=4;s++){ const t=s/5, px=lerp(x,ex,t), py=lerp(topY,ey,t);
+      vl_(g,px,py,px+Math.cos(perp)*ll*(1-t*0.5),py+Math.sin(perp)*ll*(1-t*0.5));
+      vl_(g,px,py,px-Math.cos(perp)*ll*(1-t*0.5),py-Math.sin(perp)*ll*(1-t*0.5)); }
+  }
+}
+function vl_(g,x1,y1,x2,y2){ g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); }
+// hanging vine with outlined leaves
+function vine(g,x,topY,len,leaves){ g.lineWidth=2.5; let px=x,py=topY;
+  for(let i=0;i<leaves;i++){ const nx=px+rand(-6,6), ny=py+len/leaves; vl_(g,px,py,nx,ny);
+    g.save(); g.translate(nx,ny); g.rotate(rand(-1,1)); g.beginPath(); g.ellipse(0,0,7,3,0,0,7); g.stroke(); g.restore(); px=nx; py=ny; } }
+// desk with monitor, drawers, chair
+function desk(g,x,y,w,h){ g.lineWidth=3; box(g,x,y,w,h);
+  for(let i=0;i<3;i++) box(g,x+8+i*(w-16)/3,y+8,(w-16)/3-6,h*0.34);
+  box(g,x+w*0.30,y-h*0.78,w*0.40,h*0.66); g.fillRect(x+w*0.32,y-h*0.72,w*0.36,h*0.5); // monitor
+  box(g,x+w*0.36,y+h+8,w*0.28,h*0.55); hl(g,x+w*0.36,x+w*0.64,y+h+8+h*0.28); }       // chair
+// filled disc (sun / moon)
+function disc(g,cx,cy,r){ g.beginPath(); g.arc(cx,cy,r,0,7); g.fill(); }
+// sun rays radiating outward
+function rays(g,cx,cy,r0,r1,n){ g.lineWidth=2.5; for(let i=0;i<n;i++){ const a=i/n*6.283; vl_(g,cx+Math.cos(a)*r0,cy+Math.sin(a)*r0,cx+Math.cos(a)*r1,cy+Math.sin(a)*r1); } }
+// curtain panel: top rod + wavy vertical folds
+function curtain(g,x,y,w,h){ g.lineWidth=2.5; const n=5; hl(g,x-4,x+w+4,y);
+  for(let i=0;i<=n;i++){ const fx=x+w*i/n; g.beginPath(); g.moveTo(fx,y);
+    for(let yy=y;yy<=y+h;yy+=12) g.lineTo(fx+Math.sin((yy-y)/22+i)*3,yy); g.stroke(); } }
+// little steaming mug
+function mug(g,x,baseY){ g.lineWidth=2.5; const w=18,h=15; box(g,x,baseY-h,w,h);
+  g.beginPath(); g.arc(x+w+2,baseY-h+7,5,-1.2,1.2); g.stroke();                       // handle
+  g.beginPath(); g.moveTo(x+5,baseY-h-2); g.quadraticCurveTo(x+10,baseY-h-9,x+5,baseY-h-17); g.stroke();
+  g.beginPath(); g.moveTo(x+12,baseY-h-2); g.quadraticCurveTo(x+7,baseY-h-9,x+12,baseY-h-17); g.stroke(); }
+// rolling filled hills between two x within a clip
+function hills(g,x0,x1,baseY,topY){ g.beginPath(); g.moveTo(x0,baseY); g.lineTo(x0,topY); let hx=x0;
+  while(hx<x1){ const nx=hx+rand(50,95); g.lineTo(nx,topY+rand(-10,22)); hx=nx; } g.lineTo(x1,baseY); g.closePath(); g.fill(); }
+
+function sceneCozy(g){
+  const fy=H*0.87; g.lineWidth=3; hl(g,0,W,fy);
+  shelf(g,W*0.015,H*0.15,W*0.155,H*0.66,6);
+  shelf(g,W*0.83,H*0.17,W*0.155,H*0.46,4);
+  ring(g,W*0.50,H*0.25,H*0.155);
+  frame(g,W*0.21,H*0.13,W*0.085,H*0.14); frame(g,W*0.69,H*0.15,W*0.075,H*0.12);
+  vine(g,W*0.33,0,H*0.24,7); vine(g,W*0.61,0,H*0.19,6);
+  plant(g,W*0.105,fy,H*0.50,W*0.12,13);
+  plant(g,W*0.905,fy,H*0.46,W*0.11,12);
+  desk(g,W*0.40,H*0.62,W*0.20,H*0.15);
+  plant(g,W*0.755,H*0.58,H*0.20,W*0.05,8);
+}
+function sceneStudio(g){
+  const fy=H*0.89; g.lineWidth=3; hl(g,0,W,fy);
+  for(const hx of [0.07,0.19,0.31,0.5,0.69,0.81,0.93]) vine(g,W*hx,0,rand(H*0.2,H*0.46),ri(6,9));
+  for(const px of [0.06,0.19,0.32,0.45,0.63,0.77,0.92]) plant(g,W*px,fy,rand(H*0.36,H*0.62),W*rand(0.08,0.13),ri(11,17));
+  shelf(g,W*0.40,H*0.28,W*0.20,H*0.16,2);
+  ring(g,W*0.85,H*0.22,H*0.09);
+}
+function sceneCity(g){
+  let x=0; while(x<W){ const bw=rand(W*0.05,W*0.11), bh=rand(H*0.32,H*0.72), by=H-bh; g.lineWidth=3; box(g,x,by,bw,bh);
+    for(let wy=by+14;wy<H-12;wy+=18) for(let wx=x+8;wx<x+bw-9;wx+=15){ if(Math.random()<0.55) g.fillRect(wx,wy,7,9); else g.strokeRect(wx,wy,7,9); }
+    x+=bw+rand(3,10); }
+  ring(g,W*0.84,H*0.16,40);
+  for(let i=0;i<90;i++){ g.fillRect(rand(0,W),rand(0,H*0.5),2,2); }
+}
+
+function sceneNook(g){
+  const fy=H*0.86; g.lineWidth=3; hl(g,0,W,fy);
+  // armchair (center-left)
+  const ax=W*0.27, aw=W*0.18, ay=fy-H*0.30, ah=H*0.30;
+  box(g,ax,ay,aw,ah*0.62);                         // backrest
+  box(g,ax-aw*0.08,ay+ah*0.5,aw*1.16,ah*0.5);      // seat
+  box(g,ax-aw*0.08,ay+ah*0.32,aw*0.16,ah*0.68);    // left arm
+  box(g,ax+aw*0.92,ay+ah*0.32,aw*0.16,ah*0.68);    // right arm
+  // floor lamp + glow
+  const lx=W*0.53; vl(g,lx,fy,lx,fy-H*0.42);
+  g.beginPath(); g.moveTo(lx-28,fy-H*0.42); g.lineTo(lx+28,fy-H*0.42); g.lineTo(lx+16,fy-H*0.33); g.lineTo(lx-16,fy-H*0.33); g.closePath(); g.stroke();
+  ring(g,lx,fy-H*0.41,20);
+  // side table + cup
+  box(g,W*0.61,fy-H*0.13,W*0.06,H*0.13); box(g,W*0.625,fy-H*0.17,W*0.022,H*0.04);
+  // tall plant + small one, window (4-pane), frame, shelf
+  plant(g,W*0.80,fy,H*0.44,W*0.085,9);
+  plant(g,W*0.46,fy,H*0.16,W*0.045,6);
+  const wx=W*0.05,wy=H*0.12,ww=W*0.13,wh=H*0.22;
+  box(g,wx,wy,ww,wh); g.lineWidth=2; vl(g,wx+ww/2,wy,wy+wh); hl(g,wx,wx+ww,wy+wh/2); g.lineWidth=3;
+  frame(g,W*0.64,H*0.16,W*0.08,H*0.12);
+  shelf(g,W*0.86,H*0.20,W*0.12,H*0.30,3);
+  g.lineWidth=2; g.beginPath(); g.ellipse(W*0.40,fy+H*0.04,W*0.20,H*0.03,0,0,7); g.stroke(); // rug
+}
+function sceneStars(g){
+  ring(g,W*0.74,H*0.23,H*0.13);                                   // moon
+  for(let i=0;i<170;i++){ const s=Math.random()<0.15?3:2; g.fillRect(rand(0,W),rand(0,H*0.74),s,s); } // stars
+  for(let i=0;i<6;i++){ const sx=rand(W*0.1,W*0.9), sy=rand(H*0.1,H*0.5); g.lineWidth=2; hl(g,sx-6,sx+6,sy); vl(g,sx,sy-6,sy+6); } // twinkles
+  // rooftop/hill silhouette (filled -> dense dotted mass)
+  g.beginPath(); g.moveTo(0,H); g.lineTo(0,H*0.82); let x=0;
+  while(x<W){ const nx=x+rand(70,150), ny=H*rand(0.74,0.9); g.lineTo(nx,ny); x=nx; }
+  g.lineTo(W,H); g.closePath(); g.fill();
+}
+// MORNING: big arched window, rising sun + rays, hills outside, curtains, sill plant + mug
+function sceneSunrise(g){
+  const fy=H*0.84; g.lineWidth=3; hl(g,0,W,fy);
+  const x0=W*0.31,x1=W*0.69,wtop=H*0.13,sill=H*0.70,mid=(x0+x1)/2,arc=H*0.10;
+  // distant sun + rays + hills, clipped inside the window
+  g.save(); g.beginPath(); g.moveTo(x0,sill); g.lineTo(x0,wtop+arc);
+  g.quadraticCurveTo(x0,wtop,mid,wtop); g.quadraticCurveTo(x1,wtop,x1,wtop+arc); g.lineTo(x1,sill); g.closePath(); g.clip();
+  rays(g,mid,H*0.345,H*0.085,H*0.155,14); disc(g,mid,H*0.345,H*0.072);
+  hills(g,x0-4,x1+4,sill,H*0.55); g.restore();
+  // window frame + 3x3 pane muntins
+  g.lineWidth=4; g.beginPath(); g.moveTo(x0,sill); g.lineTo(x0,wtop+arc);
+  g.quadraticCurveTo(x0,wtop,mid,wtop); g.quadraticCurveTo(x1,wtop,x1,wtop+arc); g.lineTo(x1,sill); g.stroke();
+  g.lineWidth=2; vl(g,lerp(x0,x1,0.34),wtop+arc*0.5,sill); vl(g,lerp(x0,x1,0.66),wtop+arc*0.5,sill);
+  hl(g,x0,x1,lerp(wtop,sill,0.42)); hl(g,x0,x1,lerp(wtop,sill,0.72));
+  g.lineWidth=4; hl(g,x0-16,x1+16,sill);                 // sill ledge
+  // curtains framing the window
+  curtain(g,x0-W*0.115,wtop+arc,W*0.10,sill-wtop-arc);
+  curtain(g,x1+W*0.015,wtop+arc,W*0.10,sill-wtop-arc);
+  // sill items
+  plant(g,x0+W*0.045,sill,H*0.12,W*0.045,7); mug(g,x1-W*0.07,sill);
+  // a couple of distant birds
+  for(const [bx,by] of [[W*0.40,H*0.27],[W*0.44,H*0.24],[W*0.58,H*0.30]]){
+    g.lineWidth=2; g.beginPath(); g.moveTo(bx-6,by); g.quadraticCurveTo(bx,by-4,bx+6,by); g.stroke(); }
+}
+// DAY: workspace — desk + monitor + keyboard, pinboard of notes, shelf, clock, window, chair, plant
+function sceneDesk(g){
+  const fy=H*0.84; g.lineWidth=3; hl(g,0,W,fy);
+  // window with daylight (left)
+  box(g,W*0.05,H*0.15,W*0.19,H*0.29); vl(g,W*0.145,H*0.15,H*0.44); hl(g,W*0.05,W*0.24,H*0.295);
+  // pinboard of notes (center-top)
+  box(g,W*0.35,H*0.11,W*0.27,H*0.22);
+  for(let r=0;r<2;r++) for(let cc=0;cc<3;cc++) box(g,W*0.365+cc*W*0.085,H*0.14+r*H*0.095,W*0.062,H*0.072);
+  // shelf of books + clock (right)
+  shelf(g,W*0.70,H*0.13,W*0.24,H*0.13,1); ring(g,W*0.90,H*0.40,H*0.058);
+  // desk slab + legs
+  const dx=W*0.29,dw=W*0.42,dy=H*0.62; g.lineWidth=4; box(g,dx,dy,dw,H*0.035);
+  vl(g,dx+14,dy+H*0.035,fy); vl(g,dx+dw-14,dy+H*0.035,fy);
+  // monitor (filled screen) + stand
+  box(g,W*0.41,dy-H*0.19,W*0.16,H*0.155); g.fillRect(W*0.418,dy-H*0.178,W*0.144,H*0.125);
+  g.lineWidth=3; vl(g,W*0.49,dy-H*0.035,dy); hl(g,W*0.475,W*0.505,dy);
+  // keyboard, mug, book stack on desk
+  box(g,W*0.43,dy-13,W*0.12,9); mug(g,W*0.585,dy);
+  for(let i=0;i<3;i++) box(g,W*0.315,dy-9-i*9,W*0.05,9);
+  // chair back + plant
+  box(g,W*0.45,fy-H*0.15,W*0.09,H*0.15); plant(g,W*0.74,fy,H*0.32,W*0.07,8);
+}
+// EVENING: cafe — counter, stools, pendant lamps, espresso machine, menu board, window, plant
+function sceneCafe(g){
+  const fy=H*0.87; g.lineWidth=3; hl(g,0,W,fy);
+  const cx=W*0.17,cw=W*0.50,ctop=fy-H*0.22;
+  // pendant lamps (draw first, behind) — dome shades with a glow bulb
+  for(const lx of [W*0.25,W*0.42,W*0.59]){ g.lineWidth=2.5; vl(g,lx,0,H*0.16);
+    g.beginPath(); g.arc(lx,H*0.16,H*0.045,Math.PI,0); g.lineTo(lx+H*0.045,H*0.165); g.lineTo(lx-H*0.045,H*0.165); g.closePath(); g.stroke();
+    disc(g,lx,H*0.175,4); }
+  // counter (front face + thick top lip)
+  g.lineWidth=3; box(g,cx,ctop,cw,fy-ctop); g.lineWidth=4; hl(g,cx-8,cx+cw+8,ctop); g.lineWidth=3; hl(g,cx,cx+cw,ctop+12);
+  // espresso machine on the RIGHT of the counter top
+  box(g,cx+cw*0.60,ctop-H*0.12,W*0.14,H*0.12); hl(g,cx+cw*0.60,cx+cw*0.60+W*0.14,ctop-H*0.065);
+  vl(g,cx+cw*0.66,ctop-H*0.05,ctop); vl(g,cx+cw*0.74,ctop-H*0.05,ctop); disc(g,cx+cw*0.70,ctop-H*0.095,3);
+  // 2 bar stools on the LEFT — filled round seat (stands out) on a post to the floor
+  for(const sx of [cx+cw*0.16,cx+cw*0.38]){ g.lineWidth=3;
+    g.beginPath(); g.ellipse(sx,ctop+H*0.05,15,5,0,0,7); g.fill();            // seat
+    vl(g,sx,ctop+H*0.05,fy); g.beginPath(); g.ellipse(sx,fy-H*0.05,9,3,0,0,7); g.stroke(); } // post + footring
+  // menu board (right) with text lines
+  box(g,W*0.76,H*0.15,W*0.19,H*0.23);
+  for(let i=0;i<5;i++) hl(g,W*0.785,W*0.925,H*0.19+i*H*0.035);
+  // window (left) + plant (right)
+  box(g,W*0.03,H*0.16,W*0.10,H*0.26); vl(g,W*0.08,H*0.16,H*0.42); hl(g,W*0.03,W*0.13,H*0.29);
+  plant(g,W*0.89,fy,H*0.30,W*0.06,7);
+}
+
+// every theme = a DISTINCT scene design (no scene reused), 2 per time-of-day bucket
+const THEMES=[
+  { name:"morning window", time:"morning", dot:"245,206,166", draw:sceneSunrise },
+  { name:"quiet study",    time:"morning", dot:"236,224,200", draw:sceneCozy },
+  { name:"work desk",      time:"day",     dot:"214,224,232", draw:sceneDesk },
+  { name:"plant studio",   time:"day",     dot:"176,206,168", draw:sceneStudio },
+  { name:"evening cafe",   time:"evening", dot:"230,168,104", draw:sceneCafe },
+  { name:"reading nook",   time:"evening", dot:"222,150,110", draw:sceneNook },
+  { name:"city night",     time:"night",   dot:"150,170,214", draw:sceneCity },
+  { name:"starry night",   time:"night",   dot:"200,206,230", draw:sceneStars },
+];
+let themeI=0;
+function dotify(theme){
+  const t=document.createElement("canvas"); t.width=W; t.height=H; const tx=t.getContext("2d");
+  tx.fillStyle="#000"; tx.fillRect(0,0,W,H);
+  tx.strokeStyle="#fff"; tx.fillStyle="#fff"; tx.lineWidth=3; tx.lineJoin="round"; tx.lineCap="round";
+  theme.draw(tx);
+  const data=tx.getImageData(0,0,W,H).data, p=CFG.DOT_PITCH, off=(p-CFG.DOT_SIZE)/2;
+  // halftone: a dot in EVERY cell — faint base grid everywhere + brighter where objects are.
+  // sample the MAX brightness across the whole cell (not one pixel) so a thin 3px line
+  // lands in every cell it crosses -> lines read continuous/solid, not dashed/torn.
+  for(let gy=0;gy<H;gy+=p) for(let gx=0;gx<W;gx+=p){
+    let b=0;
+    for(let yy=gy;yy<gy+p&&yy<H;yy++){ const row=yy*W;
+      for(let xx=gx;xx<gx+p&&xx<W;xx++){ const v=data[(row+xx)*4]; if(v>b) b=v; } }
+    b/=255;
+    const a=clamp(CFG.BASE_DOT + b*0.92 + (Math.random()-0.5)*0.02, 0.04, 0.97);
+    bgx.fillStyle=`rgba(${theme.dot},${a})`; bgx.fillRect(gx+off,gy+off,CFG.DOT_SIZE,CFG.DOT_SIZE);
+  }
+}
+function buildBg(){
+  bgx.fillStyle="#161514"; bgx.fillRect(0,0,W,H);
+  dotify(THEMES[themeI]);
+  const vg=bgx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*0.66);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(6,5,4,0.45)");
+  bgx.fillStyle=vg; bgx.fillRect(0,0,W,H);
+}
+function showThemeName(){ const el=document.getElementById("theme"); el.textContent=THEMES[themeI].name; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),1800); }
+function switchTheme(){ themeI=(themeI+1)%THEMES.length; buildBg(); showThemeName(); }
+document.getElementById("app").addEventListener("click",switchTheme);
+// time-of-day: auto-pick the bucket's theme, re-check each minute (?h=NN to override)
+function curHour(){ const u=new URLSearchParams(location.search).get("h"); return u!==null ? ((+u%24)+24)%24 : new Date().getHours(); }
+function bucketOf(h){ if(h>=5&&h<10) return "morning"; if(h>=10&&h<17) return "day"; if(h>=17&&h<20) return "evening"; return "night"; }
+let curBucket=null;
+function bucketThemes(b){ const a=[]; THEMES.forEach((t,i)=>{ if(t.time===b) a.push(i); }); return a; }
+function tickTime(){ const b=bucketOf(curHour()); if(b===curBucket) return; curBucket=b;
+  const list=bucketThemes(b); if(list.length){ themeI=list[Math.floor(Math.random()*list.length)]; buildBg(); showThemeName(); } }
+function rotateInBucket(){ const list=bucketThemes(curBucket); if(list.length<2) return;
+  themeI=list[(list.indexOf(themeI)+1)%list.length]; buildBg(); showThemeName(); }
+if(!REDUCE){ setInterval(tickTime,60000); setInterval(rotateInBucket,240000); }
+
+/* ===================== creature (Claude FM blob — compact) ===================== */
+const LW=30, LH=30;
+const cre=document.createElement("canvas"); cre.width=LW; cre.height=LH;
+const crx=cre.getContext("2d");
+const COL={clay:"#CC785C",hi:"#E0926F",lo:"#B5634A",blue:"#3A6EA5",blueLo:"#2C547D",ink:"#15120f"};
+function R(g,x,y,w,h,col){ g.fillStyle=col; g.fillRect(x,y,w,h); }
+function buildCreature(){
+  const g=crx; g.clearRect(0,0,LW,LH);
+  // headphone band (blue) over the top
+  R(g,9,3,12,2,COL.blue); R(g,7,4,3,8,COL.blue); R(g,20,4,3,8,COL.blue);
+  // orange rounded blob body
+  const bands=[[10,6,10],[8,8,14],[6,10,18],[5,12,20],[5,14,20],[5,16,20],[6,18,18],[8,20,14]];
+  for(const [x,y,w] of bands) R(g,x,y,w,2,COL.clay);
+  R(g,6,18,18,2,COL.lo);   // underside shadow
+  R(g,6,10,2,8,COL.hi);    // left rim highlight (toward light)
+  // ear cups (blue) on the sides
+  R(g,3,11,6,7,COL.blue); R(g,21,11,6,7,COL.blue);
+  R(g,3,16,6,2,COL.blueLo); R(g,21,16,6,2,COL.blueLo);
+  // little arm nubs below the cups
+  R(g,2,18,4,3,COL.clay); R(g,24,18,4,3,COL.clay);
+}
+buildCreature();
+function drawEye(ox,oy,S,ex,blink){
+  ctx.fillStyle=COL.ink;
+  if(blink){ ctx.fillRect(ox+ex*S, oy+13*S, 4*S, S); return; }
+  ctx.fillRect(ox+ex*S, oy+12*S, S, S);            // closed ⌣ sleepy eye
+  ctx.fillRect(ox+(ex+3)*S, oy+12*S, S, S);
+  ctx.fillRect(ox+(ex+1)*S, oy+13*S, 2*S, S);
+}
+
+const c={x:0,y:0,vx:0,vy:0,facing:1,faceSm:1,phase:0,speed01:0,state:"walk",pauseT:0,blinkT:rand(2,6),blink:0,target:{x:0,y:0}};
+function pickTarget(){ c.target={x:rand(CFG.MARGIN,W-CFG.MARGIN),y:rand(CFG.MARGIN,H-CFG.MARGIN)}; }
+function update(dt,t){
+  if(c.state==="walk"){ const dx=c.target.x-c.x,dy=c.target.y-c.y,d=Math.hypot(dx,dy);
+    if(d<CFG.ARRIVE){ c.state="pause"; c.pauseT=rand(...CFG.PAUSE); c.vx=c.vy=0; }
+    else{ let sp=CFG.MAX_SPEED*Math.min(d/CFG.SLOW_RADIUS,1); if(bubbleOn) sp*=0.35; c.vx=dx/d*sp; c.vy=dy/d*sp; } }
+  else { c.pauseT-=dt; if(c.pauseT<=0){ c.state="walk"; pickTarget(); } }
+  c.x=clamp(c.x+c.vx*dt,CFG.MARGIN,W-CFG.MARGIN); c.y=clamp(c.y+c.vy*dt,CFG.MARGIN,H-CFG.MARGIN);
+  if(Math.abs(c.vx)>3) c.facing=Math.sign(c.vx);
+  c.faceSm=lerp(c.faceSm,c.facing,0.2);
+  c.speed01=lerp(c.speed01,clamp(Math.hypot(c.vx,c.vy)/CFG.MAX_SPEED,0,1),0.15);
+  c.phase+=CFG.STEP_FREQ*c.speed01*dt;
+  c.blinkT-=dt; if(c.blinkT<=0){ c.blink=1; if(c.blinkT<-0.09){ c.blink=0; c.blinkT=rand(3.5,8);} }
+}
+function draw(t){
+  const S=CFG.SCALE, walk=Math.sin(c.phase*Math.PI*2);
+  const bob=-Math.abs(walk)*CFG.BOB_AMP*c.speed01+Math.sin(t*1.6)*1.0*(1-c.speed01);
+  const cx=c.x, cy=c.y+bob;   // sub-pixel smooth (no per-frame snap = no vibration)
+  // contact shadow
+  ctx.save(); ctx.translate(cx,c.y+LH/2*S*0.5+4); ctx.scale(1,0.32);
+  ctx.fillStyle=`rgba(0,0,0,${clamp(0.32+bob*0.02,0.16,0.34)})`;
+  ctx.beginPath(); ctx.arc(0,0,LW*0.40*S*0.5,0,7); ctx.fill(); ctx.restore();
+
+  ctx.save(); ctx.translate(cx,cy); ctx.scale(c.faceSm,1); ctx.rotate(walk*CFG.WADDLE*c.speed01);
+  ctx.imageSmoothingEnabled=false;
+  const ox=-LW/2*S, oy=-LH/2*S;
+  // 4 thick short legs (alternating gait)
+  const L=[Math.max(0,walk),Math.max(0,-walk),Math.max(0,-walk),Math.max(0,walk)].map(v=>v*2.4*c.speed01);
+  [6,11,16,21].forEach((lx,i)=>{ ctx.fillStyle=COL.clay; ctx.fillRect(ox+lx*S, oy+(21-L[i])*S, 3*S, (6+L[i])*S);
+    ctx.fillStyle=COL.lo; ctx.fillRect(ox+lx*S, oy+26*S, 3*S, S); });
+  // body
+  ctx.drawImage(cre, ox, oy, LW*S, LH*S);
+  // sleepy eyes
+  drawEye(ox,oy,S,10,c.blink); drawEye(ox,oy,S,16,c.blink);
+  ctx.restore();
+}
+
+/* ===================== bubble (live feed + idle) ===================== */
+const bubbleEl=document.getElementById("bubble");
+let bubbleOn=false,bubbleHideAt=0,typing=null; const sm={x:0,y:0,init:false};
+function say(text){ clearInterval(typing); bubbleEl.classList.add("show"); bubbleOn=true; let i=0; bubbleEl.textContent="";
+  typing=setInterval(()=>{ i++; bubbleEl.textContent=text.slice(0,i); if(i>=text.length) clearInterval(typing); },26);
+  bubbleHideAt=performance.now()+rand(...CFG.BUBBLE_HOLD)+text.length*28; }
+function positionBubble(){ if(!sm.init){ sm.x=c.x; sm.y=c.y; sm.init=true; }
+  sm.x=lerp(sm.x,c.x,0.09); sm.y=lerp(sm.y,c.y,0.09);
+  const bw=bubbleEl.offsetWidth,bh=bubbleEl.offsetHeight,half=LH/2*CFG.SCALE;
+  let left=sm.x-bw*0.3, top=sm.y-half-12-bh; if(top<8) top=sm.y+half+12;
+  left=clamp(left,8,W-bw-8); bubbleEl.style.left=left+"px"; bubbleEl.style.top=top+"px";
+  bubbleEl.style.setProperty("--tail",clamp(sm.x-left-7,12,bw-18)+"px"); }
+let nextIdle=performance.now()+rand(...CFG.BUBBLE_EVERY), feedQueue=[];
+function pumpQueue(){ if(feedQueue.length) say(feedQueue.shift()); }   // show next queued line
+function maybeIdle(now){ if(bubbleOn||now<nextIdle) return;
+  if(c.state!=="pause"&&Math.random()<0.5){ nextIdle=now+1500; return; }
+  say(IDLE_LINES[(Math.random()*IDLE_LINES.length)|0]); nextIdle=now+rand(...CFG.BUBBLE_EVERY); }
+let lastId=null,firstPoll=true;
+async function poll(){ try{ const r=await fetch("feed.json?_="+Date.now(),{cache:"no-store"}); if(!r.ok) return;
+  const d=await r.json(); if(d.id===lastId) return; lastId=d.id;
+  const lines=Array.isArray(d.lines)?d.lines.filter(s=>s&&(""+s).trim()):(d.text?[d.text]:[]);
+  if(firstPoll){ firstPoll=false; return; }                 // don't dump stale line(s) on fresh load
+  if(lines.length){ feedQueue=lines.slice(); bubbleOn=false; bubbleEl.classList.remove("show"); } // new turn interrupts, then cycles
+}catch(e){} }
+setInterval(poll,500);
+
+/* ===================== loop ===================== */
+let last=performance.now(),paused=false;
+document.addEventListener("visibilitychange",()=>{ paused=document.hidden; if(!paused){ last=performance.now(); requestAnimationFrame(loop);} });
+function loop(now){ if(paused) return;
+  const dt=Math.min((now-last)/1000,0.05); last=now; const t=now/1000;
+  ctx.clearRect(0,0,W,H); ctx.drawImage(bg,0,0,W,H);
+  update(dt,t); draw(t);
+  if(bubbleOn){ positionBubble(); if(now>bubbleHideAt){ bubbleOn=false; bubbleEl.classList.remove("show"); } }
+  if(!bubbleOn){ if(feedQueue.length) pumpQueue(); else maybeIdle(now); }   // cycle queued lines, then idle
+  requestAnimationFrame(loop); }
+addEventListener("resize",resize); resize();
+tickTime();   // pick the theme for the current time of day
+const forceT=new URLSearchParams(location.search).get("t");
+if(forceT!==null){ themeI=((+forceT%THEMES.length)+THEMES.length)%THEMES.length; buildBg(); showThemeName(); }
+c.x=W*0.5; c.y=H*0.55; pickTarget(); requestAnimationFrame(loop);
+setTimeout(()=>say("i'm here 🎧 click to change the theme"),900);
+</script>
+</body>
+</html>

@@ -52,6 +52,17 @@ no dependencies.
 
 Click anywhere to cycle through them manually.
 
+### Two looks
+
+The scenes ship in two render styles — same creature, same behaviour, same live feed:
+
+- **`index.html`** — the original halftone look: each scene drawn white-on-black and
+  dithered into a dot-matrix field.
+- **`index-v1.html`** — a flat, bright, high-contrast take: solid color blocks, soft
+  glows, crisp shapes, no halftone.
+
+The setup below works for either — just serve the file you prefer.
+
 ---
 
 ## How it works
@@ -176,10 +187,11 @@ theme rotation switch off for `prefers-reduced-motion: reduce`.
 
 ```
 claude-companion/
-├── index.html   # the app — canvas creature, scenes, speech bubble, feed polling
-├── bridge.py    # Claude Code Stop hook: reply -> feed.json (automatic)
-├── push.py      # manual: write a line to feed.json right now
-├── feed.json    # runtime hand-off file (auto-created; git-ignored)
+├── index.html      # the app — canvas creature, scenes, speech bubble, feed polling
+├── index-v1.html   # same app, flat/bright render (solid scenes, no halftone)
+├── bridge.py       # Claude Code Stop hook: reply -> feed.json (automatic)
+├── push.py         # manual: write a line to feed.json right now
+├── feed.json       # runtime hand-off file (auto-created; git-ignored)
 └── README.md
 ```
 

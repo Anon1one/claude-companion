@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>claude · companion — v1</title>
+<style>
+  :root{ --clay:#CC785C; --ink:#15120f; --bg:#161514; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:var(--bg);font-family:ui-sans-serif,system-ui,sans-serif}
+  #app{position:relative;width:100vw;height:100vh;overflow:hidden;cursor:pointer}
+  #scene{display:block;position:absolute;inset:0}
+  #title{position:absolute;top:14px;left:18px;color:#fff;opacity:.82;font-size:13px;letter-spacing:.3px;pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.35)}
+  #title b{font-weight:700}
+  #title i{font-style:normal;opacity:.6;font-size:11px}
+  #theme{position:absolute;top:14px;right:18px;color:#fff;opacity:0;font-size:12px;
+    font-family:ui-monospace,monospace;transition:opacity .4s;pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,.4)}
+  #theme.show{opacity:.9}
+  #hint{position:absolute;bottom:12px;left:18px;color:#fff;opacity:.4;font-size:11px;pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,.35)}
+  #grain{position:absolute;inset:0;pointer-events:none;mix-blend-mode:soft-light;opacity:.04;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    animation:boil .14s steps(1) infinite}
+  @keyframes boil{0%{background-position:0 0}50%{background-position:53px 31px}100%{background-position:17px 71px}}
+  #bubble{position:absolute;max-width:240px;padding:9px 13px;border-radius:12px;
+    background:rgba(255,255,255,.98);border:1px solid rgba(0,0,0,.06);color:var(--ink);
+    font-family:"Tiempos Text",Lora,Georgia,serif;font-size:13.5px;line-height:1.4;
+    box-shadow:0 8px 24px rgba(0,0,0,.28);opacity:0;transform:translateY(4px) scale(.96);
+    transition:opacity .18s,transform .18s;pointer-events:none;will-change:left,top}
+  #bubble.show{opacity:1;transform:none}
+  #bubble::after{content:"";position:absolute;bottom:-7px;left:var(--tail,24px);
+    border:7px solid transparent;border-top-color:rgba(255,255,255,.98);border-bottom:0}
+  @media (prefers-reduced-motion:reduce){#grain{animation:none}}
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+  <div id="grain"></div>
+  <div id="title"><b>claude</b> · companion <i>v1</i></div>
+  <div id="theme"></div>
+  <div id="hint">click to change theme</div>
+  <div id="bubble"></div>
+</div>
+
+<script>
+"use strict";
+/* ===================== CONFIG ===================== */
+const CFG = {
+  SCALE:5,
+  MAX_SPEED:55, SLOW_RADIUS:90, ARRIVE:8, MARGIN:90,
+  STEP_FREQ:3.6, BOB_AMP:1.4, LEAN:0.05, LEG_LIFT:3.6, LEG_STEP:1.2,
+  PAUSE:[0.8,3.0], BUBBLE_EVERY:[9000,17000], BUBBLE_HOLD:[2600,4200],
+};
+const IDLE_LINES=[
+  "still here with you","nice and steady…","this one's for thinking","just vibing, you build",
+  "been at it a while — water?","press play and keep building","i'm around if you need","good pace today",
+];
+const REDUCE=matchMedia("(prefers-reduced-motion:reduce)").matches;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t, rand=(a,b)=>a+Math.random()*(b-a);
+const ri=(a,b)=>Math.floor(rand(a,b+1));
+
+/* ===================== canvas ===================== */
+const cv=document.getElementById("scene"), ctx=cv.getContext("2d");
+let W=0,H=0,DPR=1;
+let bg=document.createElement("canvas"), bgx=bg.getContext("2d");
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+"px"; cv.style.height=H+"px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  bg.width=W*DPR; bg.height=H*DPR; bgx.setTransform(DPR,0,0,DPR,0,0);
+  buildBg();
+  c.x=clamp(c.x,CFG.MARGIN,W-CFG.MARGIN); c.y=clamp(c.y,CFG.MARGIN,H-CFG.MARGIN); pickTarget();
+}
+
+/* ===================== flat primitives ===================== */
+function rect(g,x,y,w,h,c){ g.fillStyle=c; g.fillRect(x,y,w,h); }
+function rr(g,x,y,w,h,r,c){ g.fillStyle=c; g.beginPath(); g.roundRect(x,y,w,h,r); g.fill(); }
+function circ(g,x,y,r,c){ g.fillStyle=c; g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
+function poly(g,pts,c){ g.fillStyle=c; g.beginPath(); g.moveTo(pts[0],pts[1]);
+  for(let i=2;i<pts.length;i+=2) g.lineTo(pts[i],pts[i+1]); g.closePath(); g.fill(); }
+function glow(g,x,y,r,c){ const gr=g.createRadialGradient(x,y,0,x,y,r);
+  const edge=c.replace(/[0-9.]+\s*\)\s*$/,"0)");                 // same-hue transparent edge (no muddy ring)
+  gr.addColorStop(0,c); gr.addColorStop(1,edge); g.fillStyle=gr;
+  g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
+function line(g,x1,y1,x2,y2,w,c){ g.strokeStyle=c; g.lineWidth=w; g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); }
+// flat potted plant: solid pot + radiating leaf blades in two greens
+function plantF(g,x,baseY,h,spread,P){
+  const ph=h*0.20, topY=baseY-ph, pw=spread;
+  poly(g,[x-pw/2,topY, x+pw/2,topY, x+pw*0.36,baseY, x-pw*0.36,baseY], P.pot);
+  rect(g,x-pw/2,topY,pw,Math.max(3,ph*0.26),P.potHi);
+  const n=7;
+  for(let i=0;i<n;i++){ const a=-1.5708+((i-(n-1)/2)/(n-1))*1.5, len=h*rand(0.72,1.0);
+    const lx=x+Math.cos(a)*len*0.5, ly=topY+Math.sin(a)*len*0.5;   // base anchored at pot rim
+    g.save(); g.translate(lx,ly); g.rotate(a+1.5708);
+    g.fillStyle=i%2?P.leaf:P.leaf2; g.beginPath(); g.ellipse(0,0,Math.max(3,h*0.045),len*0.5,0,0,7); g.fill();
+    g.restore(); }
+}
+// hanging vine: cord + leaf dots
+function vineF(g,x,topY,len,P){ line(g,x,topY,x,topY+len,3.5,P.leaf); let py=topY;
+  const steps=Math.max(4,(len/18)|0);
+  for(let i=1;i<=steps;i++){ py=topY+len*i/steps; const side=i%2?1:-1;
+    g.save(); g.translate(x,py); g.rotate(side*0.7);
+    g.fillStyle=i%2?P.leaf:P.leaf2; g.beginPath(); g.ellipse(side*7,0,6,3.5,0,0,7); g.fill(); g.restore(); } }
+// bookshelf: solid cabinet + shelves + colorful book spines
+function shelfF(g,x,y,w,h,rows,P){
+  rr(g,x,y,w,h,6,P.wood); rect(g,x+4,y+4,w-8,h-8,P.woodIn);
+  const rh=(h-8)/rows;
+  for(let r=0;r<rows;r++){ rect(g,x+4,y+4+r*rh+rh-4,w-8,4,P.wood);
+    let bx=x+9; while(bx<x+w-16){ const bw=rand(7,15), bh=rand(rh*0.5,rh*0.82), by=y+4+r*rh+rh-4-bh;
+      rect(g,bx,by,bw,bh,P.books[(Math.random()*P.books.length)|0]); bx+=bw+rand(2,4); } }
+}
+// round clock / porthole
+function clockF(g,cx,cy,r,P){ circ(g,cx,cy,r,P.ring); circ(g,cx,cy,r*0.78,P.face);
+  line(g,cx,cy,cx,cy-r*0.55,3,P.ring); line(g,cx,cy,cx+r*0.42,cy,3,P.ring); circ(g,cx,cy,r*0.09,P.ring); }
+// framed picture
+function frameF(g,x,y,w,h,P){ rr(g,x,y,w,h,4,P.wood); rect(g,x+5,y+5,w-10,h-10,P.pic); }
+// curtain panel (flat folds)
+function curtainF(g,x,y,w,h,c){ rect(g,x,y,w,h,c);                 // solid panel (no gaps)
+  const n=5; for(let i=1;i<n;i++){ const sx=x+w*i/n;              // subtle pleat seams
+    line(g,sx,y+2,sx,y+h-3,2,shade(c,-16)); }
+  rect(g,x-2,y-3,w+4,4,shade(c,14));                              // rod
+  rect(g,x,y+h-4,w,4,shade(c,-20)); }                             // single hem
+// steaming mug
+function mugF(g,x,baseY,P){ const w=18,h=15; rr(g,x,baseY-h,w,h,3,P.mug);
+  g.strokeStyle=P.mug; g.lineWidth=3; g.beginPath(); g.arc(x+w+1,baseY-h+7,5,-1.2,1.2); g.stroke();
+  g.strokeStyle="rgba(255,255,255,.5)"; g.lineWidth=2.5;
+  g.beginPath(); g.moveTo(x+6,baseY-h-2); g.quadraticCurveTo(x+1,baseY-h-9,x+6,baseY-h-16); g.stroke();
+  g.beginPath(); g.moveTo(x+12,baseY-h-2); g.quadraticCurveTo(x+17,baseY-h-9,x+12,baseY-h-16); g.stroke(); }
+// tweak a hex color's lightness a touch (for cheap shadows/highlights)
+function shade(hex,amt){ const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)+amt, gg=((n>>8)&255)+amt, b=(n&255)+amt;
+  r=clamp(r,0,255); gg=clamp(gg,0,255); b=clamp(b,0,255);
+  return "#"+((1<<24)+(r<<16)+(gg<<8)+b).toString(16).slice(1); }
+// rolling hills: rounded quadratic humps across the width, filled to the bottom
+function hillsF(g,topFrac,col){ const baseY=H*topFrac; g.fillStyle=col; g.beginPath();
+  g.moveTo(0,H); g.lineTo(0,baseY);
+  const humps=5, hw=W/humps;
+  for(let i=0;i<humps;i++){ const x0=i*hw, up=H*(i%2?0.045:0.065);
+    g.quadraticCurveTo(x0+hw*0.5,baseY-up,x0+hw,baseY); }
+  g.lineTo(W,H); g.closePath(); g.fill(); }
+
+/* ===================== 8 flat scenes ===================== */
+// MORNING — big arched window, bright sun + glow, hills, curtains, sill plant + mug
+function sceneSunrise(g,P){
+  const fy=H*0.84; rect(g,0,fy,W,H-fy,P.floor);
+  const x0=W*0.31,x1=W*0.69,wtop=H*0.13,sill=H*0.70,mid=(x0+x1)/2,arc=H*0.10;
+  g.save(); g.beginPath(); g.moveTo(x0,sill); g.lineTo(x0,wtop+arc);
+  g.quadraticCurveTo(x0,wtop,mid,wtop); g.quadraticCurveTo(x1,wtop,x1,wtop+arc); g.lineTo(x1,sill); g.closePath();
+  g.clip();
+  const sky=g.createLinearGradient(0,wtop,0,sill); sky.addColorStop(0,P.inSky[0]); sky.addColorStop(1,P.inSky[1]);
+  g.fillStyle=sky; g.fillRect(x0,wtop,x1-x0,sill-wtop);
+  const sunX=lerp(x0,x1,0.34), sunY=H*0.31; glow(g,sunX,sunY,H*0.20,P.sunGlow); circ(g,sunX,sunY,H*0.072,P.sun);
+  poly(g,[x0-4,sill, x0-4,H*0.60, W*0.42,H*0.55, W*0.55,H*0.60, x1+4,H*0.56, x1+4,sill],P.hills);
+  g.restore();
+  // frame + muntins
+  g.strokeStyle=P.frame; g.lineWidth=8; g.beginPath(); g.moveTo(x0,sill); g.lineTo(x0,wtop+arc);
+  g.quadraticCurveTo(x0,wtop,mid,wtop); g.quadraticCurveTo(x1,wtop,x1,wtop+arc); g.lineTo(x1,sill); g.stroke();
+  g.lineWidth=5; line(g,lerp(x0,x1,0.5),wtop,lerp(x0,x1,0.5),sill,5,P.frame);
+  line(g,x0,lerp(wtop,sill,0.5),x1,lerp(wtop,sill,0.5),5,P.frame);
+  rr(g,x0-18,sill,x1-x0+36,14,4,P.frame);
+  curtainF(g,x0-W*0.12,wtop+arc,W*0.10,sill-wtop-arc,P.curtain);
+  curtainF(g,x1+W*0.02,wtop+arc,W*0.10,sill-wtop-arc,P.curtain);
+  plantF(g,x0+W*0.05,sill,H*0.14,W*0.05,P); mugF(g,x1-W*0.07,sill,P);
+  for(const [bx,by] of [[W*0.40,H*0.26],[W*0.45,H*0.23],[W*0.58,H*0.29]]){
+    line(g,bx-6,by,bx,by-4,2.5,P.frame); line(g,bx,by-4,bx+6,by,2.5,P.frame); }
+}
+// MORNING — quiet study: shelves, clock, frames, vines, plants
+function sceneCozy(g,P){
+  const fy=H*0.87; rect(g,0,fy,W,H-fy,P.floor);
+  shelfF(g,W*0.015,H*0.15,W*0.155,H*0.66,6,P);
+  shelfF(g,W*0.83,H*0.15,W*0.155,H*0.66,6,P);
+  clockF(g,W*0.50,H*0.25,H*0.10,P);
+  frameF(g,W*0.235,H*0.13,W*0.08,H*0.13,P); frameF(g,W*0.685,H*0.13,W*0.08,H*0.13,P);
+  vineF(g,W*0.35,H*0.04,H*0.24,P); vineF(g,W*0.65,H*0.04,H*0.19,P);
+  plantF(g,W*0.105,fy,H*0.30,W*0.12,P); plantF(g,W*0.905,fy,H*0.28,W*0.11,P);
+}
+// DAY — work desk: window, pinboard notes, shelf+clock, desk, monitor, keyboard, plant, chair
+function sceneDesk(g,P){
+  const fy=H*0.84; rect(g,0,fy,W,H-fy,P.floor);
+  rr(g,W*0.05,H*0.15,W*0.19,H*0.29,6,P.frame); rect(g,W*0.06,H*0.16,W*0.17,H*0.27,P.win);
+  line(g,W*0.145,H*0.16,W*0.145,H*0.43,4,P.frame); line(g,W*0.06,H*0.295,W*0.23,H*0.295,4,P.frame);
+  rr(g,W*0.04,H*0.435,W*0.21,H*0.014,3,shade(P.frame,12));   // window sill
+  // pinboard + sticky notes
+  rr(g,W*0.35,H*0.11,W*0.27,H*0.22,6,P.board);
+  const notes=P.notes; let k=0;
+  for(let r=0;r<2;r++) for(let cc=0;cc<3;cc++){ rr(g,W*0.365+cc*W*0.085,H*0.14+r*H*0.095,W*0.062,H*0.072,3,notes[k++%notes.length]); }
+  shelfF(g,W*0.70,H*0.13,W*0.24,H*0.13,1,P); clockF(g,W*0.905,H*0.40,H*0.05,P);
+  // desk + legs
+  const dx=W*0.29,dw=W*0.42,dy=H*0.62; rr(g,dx,dy,dw,H*0.045,4,P.desk);
+  rect(g,dx+12,dy+H*0.045,10,fy-(dy+H*0.045),shade(P.desk,-18)); rect(g,dx+dw-22,dy+H*0.045,10,fy-(dy+H*0.045),shade(P.desk,-18));
+  // monitor
+  rr(g,W*0.41,dy-H*0.19,W*0.16,H*0.155,5,P.mon); rect(g,W*0.418,dy-H*0.178,W*0.144,H*0.125,P.screen);
+  rect(g,W*0.487,dy-H*0.035,W*0.006,H*0.035,P.mon); rect(g,W*0.475,dy-6,W*0.03,6,P.mon);
+  // keyboard, mug, books
+  rr(g,W*0.43,dy-12,W*0.12,10,2,P.mon); mugF(g,W*0.585,dy,P);
+  for(let i=0;i<3;i++) rect(g,W*0.315,dy-9-i*9,W*0.05,8,P.books[i%P.books.length]);
+  // chair pulled out in front of the desk: backrest + seat + legs (not a floating slab)
+  const chx=W*0.45, chw=W*0.09, cseat=fy-H*0.06;
+  rr(g,chx,cseat-H*0.16,chw,H*0.17,6,P.chair);
+  rect(g,chx-3,cseat,chw+6,H*0.02,shade(P.chair,-8));
+  rect(g,chx+2,cseat,5,H*0.06,shade(P.chair,-20)); rect(g,chx+chw-7,cseat,5,H*0.06,shade(P.chair,-20));
+  plantF(g,W*0.75,fy,H*0.24,W*0.07,P);
+}
+// DAY — plant studio: jungle of plants + vines + small shelf + clock
+function sceneStudio(g,P){
+  const fy=H*0.89; rect(g,0,fy,W,H-fy,P.floor);
+  for(const hx of [0.07,0.19,0.31,0.5,0.69,0.81,0.93]) vineF(g,W*hx,0,rand(H*0.2,H*0.44),P);
+  for(const px of [0.06,0.19,0.32,0.45,0.63,0.77,0.92]) plantF(g,W*px,fy,rand(H*0.30,H*0.46),W*rand(0.09,0.13),P);
+  shelfF(g,W*0.40,H*0.30,W*0.20,H*0.14,2,P);
+  for(const bx of [W*0.42,W*0.56]) poly(g,[bx,H*0.44, bx+W*0.02,H*0.44, bx,H*0.47],P.wood);  // shelf brackets
+  clockF(g,W*0.85,H*0.22,H*0.07,P);
+}
+// EVENING — cafe: pendant lamps+glow, counter, espresso, stools, menu, window, plant
+function sceneCafe(g,P){
+  const fy=H*0.87; rect(g,0,fy,W,H-fy,P.floor);
+  for(const lx of [W*0.25,W*0.42,W*0.59]){ line(g,lx,0,lx,H*0.15,3,P.cord);
+    glow(g,lx,H*0.19,H*0.10,P.lampGlow);
+    poly(g,[lx-H*0.045,H*0.165, lx+H*0.045,H*0.165, lx,H*0.115],P.lamp); circ(g,lx,H*0.175,4,P.bulb); }
+  const cx=W*0.17,cw=W*0.50,ctop=fy-H*0.22;
+  rr(g,cx,ctop,cw,fy-ctop,5,P.counter); rect(g,cx-8,ctop-6,cw+16,10,P.counterTop);
+  rr(g,cx+cw*0.60,ctop-H*0.12,W*0.14,H*0.12,4,P.machine); rect(g,cx+cw*0.60,ctop-H*0.07,W*0.14,5,shade(P.machine,-20));
+  circ(g,cx+cw*0.70,ctop-H*0.095,4,P.bulb);
+  rect(g,cx+cw*0.60+W*0.05,ctop-H*0.03,W*0.02,H*0.03,shade(P.machine,-25));                    // group head
+  line(g,cx+cw*0.60+W*0.13,ctop-H*0.08,cx+cw*0.60+W*0.155,ctop-H*0.02,3,shade(P.machine,25));  // steam wand
+  for(const sx of [cx+cw*0.20,cx+cw*0.55]){                       // stools standing in front of the counter
+    rect(g,sx-2.5,ctop,5,fy-ctop,shade(P.stool,-22));             // post to the floor
+    line(g,sx-9,fy-14,sx+9,fy-14,3,shade(P.stool,-10));           // foot ring
+    g.fillStyle=P.stool; g.beginPath(); g.ellipse(sx,ctop,15,6,0,0,7); g.fill(); }
+  rr(g,W*0.76,H*0.15,W*0.19,H*0.23,5,P.board);
+  for(let i=0;i<5;i++) rr(g,W*0.785,H*0.19+i*H*0.035,W*rand(0.08,0.14),4,2,P.menuLine);
+  rr(g,W*0.03,H*0.16,W*0.10,H*0.26,5,P.frame); rect(g,W*0.04,H*0.17,W*0.08,H*0.24,P.win);
+  line(g,W*0.08,H*0.17,W*0.08,H*0.41,3,P.frame); line(g,W*0.04,H*0.29,W*0.12,H*0.29,3,P.frame);  // muntins
+  rr(g,W*0.02,H*0.42,W*0.12,H*0.012,2,shade(P.frame,10));   // sill
+  plantF(g,W*0.90,fy-H*0.02,H*0.24,W*0.06,P);
+}
+// EVENING — reading nook: armchair, floor lamp+glow, side table, plants, window, frame, shelf, rug
+function sceneNook(g,P){
+  const fy=H*0.86; rect(g,0,fy,W,H-fy,P.floor);
+  g.fillStyle=P.rug; g.beginPath(); g.ellipse(W*0.40,fy+H*0.055,W*0.22,H*0.035,0,0,7); g.fill();
+  const ax=W*0.27, aw=W*0.18, ay=fy-H*0.30, ah=H*0.30;
+  rr(g,ax,ay,aw,ah*0.66,8,P.chair);                                   // back first
+  rr(g,ax-aw*0.08,ay+ah*0.5,aw*1.16,ah*0.5,8,shade(P.chair,10));      // seat
+  rr(g,ax-aw*0.08,ay+ah*0.30,aw*0.20,ah*0.72,6,shade(P.chair,-16));   // arms drawn LAST (in front)
+  rr(g,ax+aw*0.88,ay+ah*0.30,aw*0.20,ah*0.72,6,shade(P.chair,-16));
+  const lx=W*0.53; line(g,lx,fy,lx,fy-H*0.40,4,P.frame);
+  glow(g,lx,fy-H*0.40,H*0.13,P.lampGlow);
+  poly(g,[lx-26,fy-H*0.40, lx+26,fy-H*0.40, lx+15,fy-H*0.33, lx-15,fy-H*0.33],P.lamp);
+  rr(g,W*0.61,fy-H*0.13,W*0.06,H*0.13,4,P.wood); rect(g,W*0.625,fy-H*0.17,W*0.022,H*0.045,P.mug);
+  plantF(g,W*0.80,fy,H*0.28,W*0.085,P); plantF(g,W*0.46,fy,H*0.12,W*0.05,P);
+  rr(g,W*0.05,H*0.12,W*0.13,H*0.22,5,P.frame); rect(g,W*0.06,H*0.13,W*0.11,H*0.20,P.win);
+  line(g,W*0.115,H*0.13,W*0.115,H*0.33,3,P.frame); line(g,W*0.06,H*0.23,W*0.17,H*0.23,3,P.frame);
+  frameF(g,W*0.64,H*0.16,W*0.08,H*0.12,P);
+  shelfF(g,W*0.86,H*0.20,W*0.12,H*0.30,3,P);
+}
+// NIGHT — city: building blocks with lit windows, moon+glow, stars
+function sceneCity(g,P){
+  let x=0, i=0;
+  while(x<W){ const bw=rand(W*0.05,W*0.11), bh=rand(H*0.32,H*0.72), by=H-bh;
+    rr(g,x,by,bw,bh+10,4,P.build[i++%P.build.length]);
+    for(let wy=by+14;wy<H-16;wy+=20) for(let wx=x+8;wx<x+bw-10;wx+=16){
+      rect(g,wx,wy,7,10,Math.random()<0.5?P.lit:P.dark); }
+    x+=bw+rand(3,9); }
+  for(let s=0;s<80;s++){ const sx=rand(0,W), sy=rand(0,H*0.5);
+    if(Math.hypot(sx-W*0.84,sy-H*0.16)>48) rect(g,sx,sy,2,2,P.star); }   // stars first, none inside the moon
+  glow(g,W*0.84,H*0.16,H*0.12,P.moonGlow); circ(g,W*0.84,H*0.16,38,P.moon);
+}
+// NIGHT — starry: moon+glow, dense stars, rolling hills
+function sceneStars(g,P){
+  for(let s=0;s<150;s++){ const z=Math.random()<0.15?3:2, sx=rand(0,W), sy=rand(0,H*0.72);
+    if(Math.hypot(sx-W*0.74,sy-H*0.23)>H*0.13) rect(g,sx,sy,z,z,P.star); }   // stars first, none inside the moon
+  for(let i=0;i<5;i++){ const sx=rand(W*0.1,W*0.9), sy=rand(H*0.1,H*0.45);
+    line(g,sx-6,sy,sx+6,sy,2,P.star); line(g,sx,sy-6,sx,sy+6,2,P.star); }
+  glow(g,W*0.74,H*0.23,H*0.20,P.moonGlow); circ(g,W*0.74,H*0.23,H*0.11,P.moon);
+  circ(g,W*0.70,H*0.20,H*0.085,P.moonBite);                        // crescent bite inside the disc
+  hillsF(g,0.86,P.hills2); hillsF(g,0.92,P.hills);                 // rolling hills, not triangles
+}
+
+// each theme: a flat, bright, high-contrast scene with its own palette
+const THEMES=[
+  { name:"morning window", time:"morning", draw:sceneSunrise, pal:{
+    bg:["#FFC98B","#FFE9C7"], floor:"#E7C39A", frame:"#7A4A32", win:"#FFE9A8",
+    inSky:["#FFD6A0","#FFF0D8"], sun:"#FFD23F", sunGlow:"rgba(255,209,63,.75)", hills:"#F4A259",
+    curtain:"#E76F51", pot:"#BC6C25", potHi:"#D98E52", leaf:"#6A994E", leaf2:"#A7C957", mug:"#457B9D" } },
+  { name:"quiet study", time:"morning", draw:sceneCozy, pal:{
+    bg:["#E4C7A8","#D6B085"], floor:"#B98B62", wood:"#8B5E3C", woodIn:"#6E482D",
+    books:["#E76F51","#2A9D8F","#E9C46A","#457B9D","#BC4749"], ring:"#264653", face:"#F1FAEE", pic:"#83C5BE",
+    pot:"#BC6C25", potHi:"#D98E52", leaf:"#588157", leaf2:"#A3B18A" } },
+  { name:"work desk", time:"day", draw:sceneDesk, pal:{
+    bg:["#2FBDB0","#34C0B3"], floor:"#FFD6A5", frame:"#22333B", win:"#BFE6F2", board:"#3A2E28",
+    notes:["#FFADAD","#FDFFB6","#A0C4FF","#BDB2FF","#CAFFBF","#FFC6FF"], desk:"#E76F51",
+    mon:"#22333B", screen:"#20394D", chair:"#264653", wood:"#3A2E28", woodIn:"#2A2019",
+    books:["#E9C46A","#2A9D8F","#E76F51"], ring:"#22333B", face:"#F1FAEE",
+    pot:"#BC6C25", potHi:"#D98E52", leaf:"#52796F", leaf2:"#84A98C", mug:"#264653" } },
+  { name:"plant studio", time:"day", draw:sceneStudio, pal:{
+    bg:["#B7E4C7","#E9F5DB"], floor:"#74A57F", wood:"#6C584C", woodIn:"#4F4238",
+    books:["#40916C","#95D5B2","#D8F3DC","#2D6A4F"], ring:"#1B4332", face:"#F1FAEE",
+    pot:"#BC6C25", potHi:"#D08C60", leaf:"#40916C", leaf2:"#52B788" } },
+  { name:"evening cafe", time:"evening", draw:sceneCafe, pal:{
+    bg:["#6A4C93","#C08497"], floor:"#3D2C4A", cord:"#2B2233", lamp:"#2B2233", bulb:"#FFE08A",
+    lampGlow:"rgba(255,209,102,.8)", counter:"#5A3E46", counterTop:"#8A6A5E", machine:"#2B2233",
+    stool:"#E56B6F", board:"#2F2235", menuLine:"#E0AACF", frame:"#4A3540", win:"#FFCF8B",
+    pot:"#8C5A3B", potHi:"#B07A54", leaf:"#558564", leaf2:"#84A98C" } },
+  { name:"reading nook", time:"evening", draw:sceneNook, pal:{
+    bg:["#DCA070","#DCA070"], floor:"#8C5A3B", chair:"#457B9D", frame:"#5A3A28", win:"#FFE0A8",
+    lamp:"#5A3A28", lampGlow:"rgba(255,209,102,.75)", rug:"#E76F51", wood:"#6C4A32", mug:"#2A9D8F",
+    woodIn:"#503722", books:["#E9C46A","#2A9D8F","#E76F51"], ring:"#264653", face:"#F1FAEE", pic:"#2A9D8F",
+    pot:"#6C4A32", potHi:"#8C6244", leaf:"#588157", leaf2:"#A3B18A" } },
+  { name:"city night", time:"night", draw:sceneCity, pal:{
+    bg:["#14213D","#3A506B"], build:["#0E1626","#141F34","#1A2942","#0B1220"], lit:"#FFD166", dark:"#0E1726",
+    moon:"#F1FAEE", moonGlow:"rgba(255,243,176,.6)", star:"#FFFFFF" } },
+  { name:"starry night", time:"night", draw:sceneStars, pal:{
+    bg:["#1D2B53","#4A2E6B"], moon:"#FDF0D5", moonGlow:"rgba(253,240,213,.55)", star:"#FFFFFF",
+    hills:"#0E1330", hills2:"#2A2350", moonBite:"#232B55" } },
+];
+let themeI=0;
+function buildBg(){
+  const T=THEMES[themeI], P=T.pal;
+  const grd=bgx.createLinearGradient(0,0,0,H); grd.addColorStop(0,P.bg[0]); grd.addColorStop(1,P.bg[1]);
+  bgx.fillStyle=grd; bgx.fillRect(0,0,W,H);
+  bgx.lineJoin="round"; bgx.lineCap="round";
+  T.draw(bgx,P);
+  const vg=bgx.createRadialGradient(W/2,H*0.5,0,W/2,H*0.5,Math.max(W,H)*0.72);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(0,0,0,0.09)");
+  bgx.fillStyle=vg; bgx.fillRect(0,0,W,H);
+}
+function showThemeName(){ const el=document.getElementById("theme"); el.textContent=THEMES[themeI].name; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),1800); }
+function switchTheme(){ themeI=(themeI+1)%THEMES.length; buildBg(); showThemeName(); }
+document.getElementById("app").addEventListener("click",switchTheme);
+function curHour(){ const u=new URLSearchParams(location.search).get("h"); return u!==null ? ((+u%24)+24)%24 : new Date().getHours(); }
+function bucketOf(h){ if(h>=5&&h<10) return "morning"; if(h>=10&&h<17) return "day"; if(h>=17&&h<20) return "evening"; return "night"; }
+let curBucket=null;
+function bucketThemes(b){ const a=[]; THEMES.forEach((t,i)=>{ if(t.time===b) a.push(i); }); return a; }
+function tickTime(){ const b=bucketOf(curHour()); if(b===curBucket) return; curBucket=b;
+  const list=bucketThemes(b); if(list.length){ themeI=list[Math.floor(Math.random()*list.length)]; buildBg(); showThemeName(); } }
+function rotateInBucket(){ const list=bucketThemes(curBucket); if(list.length<2) return;
+  themeI=list[(list.indexOf(themeI)+1)%list.length]; buildBg(); showThemeName(); }
+if(!REDUCE){ setInterval(tickTime,60000); setInterval(rotateInBucket,240000); }
+
+/* ===================== creature (unchanged body — Claude FM blob) ===================== */
+const LW=30, LH=30;
+const cre=document.createElement("canvas"); cre.width=LW; cre.height=LH;
+const crx=cre.getContext("2d");
+const COL={clay:"#CC785C",hi:"#E0926F",lo:"#B5634A",blue:"#3A6EA5",blueLo:"#2C547D",ink:"#15120f"};
+function Rb(g,x,y,w,h,col){ g.fillStyle=col; g.fillRect(x,y,w,h); }
+function buildCreature(){
+  const g=crx; g.clearRect(0,0,LW,LH);
+  Rb(g,9,3,12,2,COL.blue); Rb(g,7,4,3,8,COL.blue); Rb(g,20,4,3,8,COL.blue);
+  const bands=[[10,6,10],[8,8,14],[6,10,18],[5,12,20],[5,14,20],[5,16,20],[6,18,18],[8,20,14]];
+  for(const [x,y,w] of bands) Rb(g,x,y,w,2,COL.clay);
+  Rb(g,6,18,18,2,COL.lo);
+  Rb(g,6,10,2,8,COL.hi);
+  Rb(g,3,11,6,7,COL.blue); Rb(g,21,11,6,7,COL.blue);
+  Rb(g,3,16,6,2,COL.blueLo); Rb(g,21,16,6,2,COL.blueLo);
+  Rb(g,2,18,4,3,COL.clay); Rb(g,24,18,4,3,COL.clay);
+}
+buildCreature();
+function drawEye(ox,oy,S,ex,blink){
+  ctx.fillStyle=COL.ink;
+  if(blink){ ctx.fillRect(ox+ex*S, oy+13*S, 4*S, S); return; }
+  ctx.fillRect(ox+ex*S, oy+12*S, S, S);
+  ctx.fillRect(ox+(ex+3)*S, oy+12*S, S, S);
+  ctx.fillRect(ox+(ex+1)*S, oy+13*S, 2*S, S);
+}
+
+const c={x:0,y:0,vx:0,vy:0,facing:1,faceSm:1,phase:0,speed01:0,state:"walk",pauseT:0,blinkT:rand(2,6),blink:0,target:{x:0,y:0}};
+function pickTarget(){ c.target={x:rand(CFG.MARGIN,W-CFG.MARGIN),y:rand(CFG.MARGIN,H-CFG.MARGIN)}; }
+function update(dt,t){
+  if(c.state==="walk"){ const dx=c.target.x-c.x,dy=c.target.y-c.y,d=Math.hypot(dx,dy);
+    if(d<CFG.ARRIVE){ c.state="pause"; c.pauseT=rand(...CFG.PAUSE); c.vx=c.vy=0; }
+    else{ let sp=CFG.MAX_SPEED*Math.min(d/CFG.SLOW_RADIUS,1); if(bubbleOn) sp*=0.35; c.vx=dx/d*sp; c.vy=dy/d*sp; } }
+  else { c.pauseT-=dt; if(c.pauseT<=0){ c.state="walk"; pickTarget(); } }
+  c.x=clamp(c.x+c.vx*dt,CFG.MARGIN,W-CFG.MARGIN); c.y=clamp(c.y+c.vy*dt,CFG.MARGIN,H-CFG.MARGIN);
+  if(Math.abs(c.vx)>3) c.facing=Math.sign(c.vx);
+  c.faceSm=lerp(c.faceSm,c.facing,0.16);                         // smoother turn easing
+  c.speed01=lerp(c.speed01,clamp(Math.hypot(c.vx,c.vy)/CFG.MAX_SPEED,0,1),0.12);
+  c.phase+=CFG.STEP_FREQ*c.speed01*dt;
+  c.blinkT-=dt; if(c.blinkT<=0){ c.blink=1; if(c.blinkT<-0.09){ c.blink=0; c.blinkT=rand(3.5,8);} }
+}
+// smoother gait: diagonal-pair legs that LIFT and SWING (a walk cycle), gentle lean + bob
+const LEG_X=[6,11,16,21], LEG_PHASE=[0,Math.PI,Math.PI,0];   // diagonal trot pairing
+function draw(t){
+  const S=CFG.SCALE, gait=c.phase*Math.PI*2, sp=c.speed01;
+  const bob=(-Math.abs(Math.sin(gait))*CFG.BOB_AMP)*sp + Math.sin(t*1.6)*0.9*(1-sp);
+  const cx=c.x, cy=c.y+bob;
+  // contact shadow (tightens as the body lifts)
+  ctx.save(); ctx.translate(cx,c.y+LH/2*S*0.8); ctx.scale(1,0.30);   // shadow sits under the feet
+  ctx.fillStyle=`rgba(0,0,0,${clamp(0.30+bob*0.02,0.14,0.32)})`;
+  ctx.beginPath(); ctx.arc(0,0,LW*0.40*S*0.5,0,7); ctx.fill(); ctx.restore();
+
+  ctx.save(); ctx.translate(cx,cy); ctx.scale(c.faceSm,1);
+  ctx.rotate(Math.sin(gait)*CFG.LEAN*sp);                       // gentle lean, not a hard waddle
+  ctx.imageSmoothingEnabled=false;
+  const ox=-LW/2*S, oy=-LH/2*S;
+  // legs: each lifts off the ground and swings forward through its cycle
+  LEG_X.forEach((lx,i)=>{
+    const ph=gait+LEG_PHASE[i], swing=Math.sin(ph);
+    const lift=Math.max(0,swing)*CFG.LEG_LIFT*sp;                // foot rises during swing
+    const step=-Math.cos(ph)*CFG.LEG_STEP*sp;                    // stance foot pushes back (correct walk sign)
+    const fx=ox+lx*S+step*S;
+    const top=oy+20*S, footY=oy+26*S-lift*S;
+    ctx.fillStyle=COL.clay; ctx.fillRect(fx, top, 3*S, Math.max(2*S,footY-top));
+    ctx.fillStyle=COL.lo;   ctx.fillRect(fx, footY, 3*S, S);
+  });
+  ctx.drawImage(cre, ox, oy, LW*S, LH*S);
+  drawEye(ox,oy,S,10,c.blink); drawEye(ox,oy,S,16,c.blink);
+  ctx.restore();
+}
+
+/* ===================== bubble (live feed + idle) ===================== */
+const bubbleEl=document.getElementById("bubble");
+let bubbleOn=false,bubbleHideAt=0,typing=null; const sm={x:0,y:0,init:false};
+function say(text){ clearInterval(typing); bubbleEl.classList.add("show"); bubbleOn=true; let i=0; bubbleEl.textContent="";
+  typing=setInterval(()=>{ i++; bubbleEl.textContent=text.slice(0,i); if(i>=text.length) clearInterval(typing); },26);
+  bubbleHideAt=performance.now()+rand(...CFG.BUBBLE_HOLD)+text.length*28; }
+function positionBubble(){ if(!sm.init){ sm.x=c.x; sm.y=c.y; sm.init=true; }
+  sm.x=lerp(sm.x,c.x,0.09); sm.y=lerp(sm.y,c.y,0.09);
+  const bw=bubbleEl.offsetWidth,bh=bubbleEl.offsetHeight,half=LH/2*CFG.SCALE;
+  let left=sm.x-bw*0.3, top=sm.y-half-12-bh; if(top<8) top=sm.y+half+12;
+  left=clamp(left,8,W-bw-8); bubbleEl.style.left=left+"px"; bubbleEl.style.top=top+"px";
+  bubbleEl.style.setProperty("--tail",clamp(sm.x-left-7,12,bw-18)+"px"); }
+let nextIdle=performance.now()+rand(...CFG.BUBBLE_EVERY), feedQueue=[];
+function pumpQueue(){ if(feedQueue.length) say(feedQueue.shift()); }
+function maybeIdle(now){ if(bubbleOn||now<nextIdle) return;
+  if(c.state!=="pause"&&Math.random()<0.5){ nextIdle=now+1500; return; }
+  say(IDLE_LINES[(Math.random()*IDLE_LINES.length)|0]); nextIdle=now+rand(...CFG.BUBBLE_EVERY); }
+let lastId=null,firstPoll=true;
+async function poll(){ try{ const r=await fetch("feed.json?_="+Date.now(),{cache:"no-store"}); if(!r.ok) return;
+  const d=await r.json(); if(d.id===lastId) return; lastId=d.id;
+  const lines=Array.isArray(d.lines)?d.lines.filter(s=>s&&(""+s).trim()):(d.text?[d.text]:[]);
+  if(firstPoll){ firstPoll=false; return; }
+  if(lines.length){ feedQueue=lines.slice(); bubbleOn=false; bubbleEl.classList.remove("show"); }
+}catch(e){} }
+setInterval(poll,500);
+
+/* ===================== loop ===================== */
+let last=performance.now(),paused=false;
+document.addEventListener("visibilitychange",()=>{ paused=document.hidden; if(!paused){ last=performance.now(); requestAnimationFrame(loop);} });
+function loop(now){ if(paused) return;
+  const dt=Math.min((now-last)/1000,0.05); last=now; const t=now/1000;
+  ctx.clearRect(0,0,W,H); ctx.drawImage(bg,0,0,W,H);
+  update(dt,t); draw(t);
+  if(bubbleOn){ positionBubble(); if(now>bubbleHideAt){ bubbleOn=false; bubbleEl.classList.remove("show"); } }
+  if(!bubbleOn){ if(feedQueue.length) pumpQueue(); else maybeIdle(now); }
+  requestAnimationFrame(loop); }
+addEventListener("resize",resize); resize();
+tickTime();
+const forceT=new URLSearchParams(location.search).get("t");
+if(forceT!==null){ themeI=((+forceT%THEMES.length)+THEMES.length)%THEMES.length; buildBg(); showThemeName(); }
+c.x=W*0.5; c.y=H*0.55; pickTarget(); requestAnimationFrame(loop);
+setTimeout(()=>say("i'm here 🎧 click to change the theme"),900);
+</script>
+</body>
+</html>

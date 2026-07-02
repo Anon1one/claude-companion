@@ -1,14 +1,15 @@
 # Claude Companion
 
 A tiny desktop companion that lives in your browser. A chunky, headphone-wearing
-blob wanders a dot-matrix world, picks a scene to match the time of day, and speaks
-short partner-like lines in a speech bubble — including a live mirror of whatever
-Claude Code just said in your terminal.
+blob wanders a little canvas world, picks a scene to match the time of day, and
+speaks short partner-like lines in a speech bubble — including a live mirror of
+whatever Claude Code just said in your terminal.
 
-It's a single HTML file plus two small Python scripts. No build step, no framework,
-no dependencies.
+It's one HTML file (in your choice of two looks) plus two small Python scripts.
+No build step, no framework, no dependencies.
 
 ![themes](docs/themes.png)
+*Top: the flat/bright look (`index-v1.html`). Bottom: the original halftone look (`index.html`).*
 
 > If the image above is missing, drop a screenshot at `docs/themes.png` — it's
 > optional and the app doesn't need it.
@@ -18,11 +19,17 @@ no dependencies.
 ## What it does
 
 - **A hand-drawn creature** — orange blob, blue headphones, sleepy eyes, four
-  stubby legs. It waddles around with a planted-foot gait, bobs, blinks, and faces
-  the way it walks. Everything is procedural (drawn frame by frame on a canvas), so
-  it never repeats exactly.
+  stubby legs. It waddles around with a planted-foot gait, bobs, sways while it
+  rests, blinks (sometimes twice), glances around between walks, waves a little
+  arm now and then, and perks up when it has something to say. Everything is
+  procedural (drawn frame by frame on a canvas), so it never repeats exactly.
+- **Furniture is solid** — each scene registers its furniture as collision zones,
+  and the creature treats them as real: it wanders *around* desks, counters, and
+  bookshelves instead of walking through them, slides along edges, and picks a new
+  path when it gets boxed in.
 - **Eight genuinely distinct scenes** — not one scene recolored eight times. Each is
-  its own little world, rendered as a halftone dot field over a dark background.
+  its own little world, in either of two render styles: a halftone dot field over a
+  dark background, or a flat, bright, high-contrast look (see *Two looks* below).
 - **Time-of-day theming** — it auto-picks a scene that fits the current hour and
   quietly rotates within that mood.
 - **Live chat mirror** — at the end of every Claude Code turn, the companion shows
@@ -122,7 +129,8 @@ cd claude-companion
 python3 -m http.server 8777
 ```
 
-Then open <http://localhost:8777/> and leave it on a second monitor.
+Then open <http://localhost:8777/> (halftone) or
+<http://localhost:8777/index-v1.html> (flat/bright) and leave it on a second monitor.
 
 ### 2. Wire up the Claude Code hooks
 
@@ -192,6 +200,8 @@ claude-companion/
 ├── bridge.py       # Claude Code Stop hook: reply -> feed.json (automatic)
 ├── push.py         # manual: write a line to feed.json right now
 ├── feed.json       # runtime hand-off file (auto-created; git-ignored)
+├── docs/themes.png # README hero (montage of both looks — optional)
+├── LICENSE
 └── README.md
 ```
 
@@ -200,12 +210,15 @@ claude-companion/
 ## Built with
 
 - **HTML5 Canvas 2D** + **vanilla JavaScript** — no framework, no build, no
-  dependencies. The render loop runs on `requestAnimationFrame`; the scenes are
-  drawn white-on-black and then converted to a halftone dot field per frame.
+  dependencies. The render loop runs on `requestAnimationFrame`; each scene is
+  pre-rendered to an offscreen canvas when the theme changes (in the halftone look
+  it's drawn white-on-black and dithered into a dot field; in the flat look it's
+  drawn as solid shapes), so the loop just blits it and animates the creature.
 - **Python 3 standard library only** — `bridge.py` and `push.py` import nothing
   outside the stdlib (`json`, `re`, `unicodedata`, …).
-- **Claude Code hooks** — the `Stop` hook is the glue that lets the companion follow
-  the conversation.
+- **Claude Code hooks** — the `Stop` hook mirrors each finished reply, and the
+  `PreToolUse` hook narrates the work live; together they're the glue that lets the
+  companion follow the conversation.
 
 No package manager, no `node_modules`, nothing to install — clone it and serve it.
 

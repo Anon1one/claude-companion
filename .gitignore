@@ -9,6 +9,9 @@ __pycache__/
 node_modules/
 package-lock.json
 
+# local working note / agent brief — not part of the shipped project
+prompt.md
+
 # os
 .DS_Store
 Thumbs.db

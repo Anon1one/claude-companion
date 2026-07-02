@@ -59,6 +59,17 @@ const REDUCE=matchMedia("(prefers-reduced-motion:reduce)").matches;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t, rand=(a,b)=>a+Math.random()*(b-a);
 const ri=(a,b)=>Math.floor(rand(a,b+1));
 
+/* ===================== solid props (furniture the creature can't cross) ===================== */
+let SOLIDS=[];
+function solidR(x,y,w,h){ SOLIDS.push({x,y,w,h}); }
+const PAD=()=>LW*CFG.SCALE*0.32;                                   // creature half-footprint
+function inSolid(x,y,pad){ for(const s of SOLIDS){
+    if(x>s.x-pad&&x<s.x+s.w+pad&&y>s.y-pad&&y<s.y+s.h+pad) return true; } return false; }
+function freeSpot(){ for(let i=0;i<60;i++){
+    const x=rand(CFG.MARGIN,W-CFG.MARGIN), y=rand(CFG.MARGIN,H-CFG.MARGIN);
+    if(!inSolid(x,y,PAD())) return {x,y}; }
+  return {x:W*0.5,y:H-CFG.MARGIN}; }                               // open floor at the bottom
+
 /* ===================== canvas ===================== */
 const cv=document.getElementById("scene"), ctx=cv.getContext("2d");
 let W=0,H=0,DPR=1;
@@ -84,10 +95,14 @@ function glow(g,x,y,r,c){ const gr=g.createRadialGradient(x,y,0,x,y,r);
   g.beginPath(); g.arc(x,y,r,0,7); g.fill(); }
 function line(g,x1,y1,x2,y2,w,c){ g.strokeStyle=c; g.lineWidth=w; g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); }
 // flat potted plant: solid pot + radiating leaf blades in two greens
-function plantF(g,x,baseY,h,spread,P){
+function plantF(g,x,baseY,h,spread,P,back){
   const ph=h*0.20, topY=baseY-ph, pw=spread;
+  if(!back) solidR(x-h*0.26,baseY-h*0.60,h*0.52,h*0.62);   // visual mass only — keep floor walkable
+  shadowE(g,x,baseY+2,pw*0.60,4.5,0.12);
   poly(g,[x-pw/2,topY, x+pw/2,topY, x+pw*0.36,baseY, x-pw*0.36,baseY], P.pot);
+  poly(g,[x+pw*0.10,topY, x+pw/2,topY, x+pw*0.36,baseY, x+pw*0.10,baseY], shade(P.pot,-18));
   rect(g,x-pw/2,topY,pw,Math.max(3,ph*0.26),P.potHi);
+  g.fillStyle=shade(P.pot,-46); g.beginPath(); g.ellipse(x,topY+1,pw*0.38,3.5,0,0,7); g.fill();  // soil opening
   const n=7;
   for(let i=0;i<n;i++){ const a=-1.5708+((i-(n-1)/2)/(n-1))*1.5, len=h*rand(0.72,1.0);
     const lx=x+Math.cos(a)*len*0.5, ly=topY+Math.sin(a)*len*0.5;   // base anchored at pot rim
@@ -103,17 +118,27 @@ function vineF(g,x,topY,len,P){ line(g,x,topY,x,topY+len,3.5,P.leaf); let py=top
     g.fillStyle=i%2?P.leaf:P.leaf2; g.beginPath(); g.ellipse(side*7,0,6,3.5,0,0,7); g.fill(); g.restore(); } }
 // bookshelf: solid cabinet + shelves + colorful book spines
 function shelfF(g,x,y,w,h,rows,P){
+  const d=9; solidR(x,y-d,w+d,h+d);
+  rect(g,x+6,y+8,w,h,"rgba(0,0,0,.10)");                                    // cast shadow
+  poly(g,[x+w,y, x+w+d,y-d*0.6, x+w+d,y+h-d*0.6, x+w,y+h],shade(P.wood,-24)); // right side
+  poly(g,[x,y, x+d,y-d*0.6, x+w+d,y-d*0.6, x+w,y],shade(P.wood,18));          // lit top
   rr(g,x,y,w,h,6,P.wood); rect(g,x+4,y+4,w-8,h-8,P.woodIn);
   const rh=(h-8)/rows;
   for(let r=0;r<rows;r++){ rect(g,x+4,y+4+r*rh+rh-4,w-8,4,P.wood);
     let bx=x+9; while(bx<x+w-16){ const bw=rand(7,15), bh=rand(rh*0.5,rh*0.82), by=y+4+r*rh+rh-4-bh;
-      rect(g,bx,by,bw,bh,P.books[(Math.random()*P.books.length)|0]); bx+=bw+rand(2,4); } }
+      rect(g,bx,by,bw,bh,P.books[(Math.random()*P.books.length)|0]); bx+=bw+rand(2,4); }
+    rect(g,x+4,y+4+r*rh,w-8,5,"rgba(0,0,0,.20)"); }               // each shelf shades the bay below
 }
 // round clock / porthole
-function clockF(g,cx,cy,r,P){ circ(g,cx,cy,r,P.ring); circ(g,cx,cy,r*0.78,P.face);
+function clockF(g,cx,cy,r,P){ solidR(cx-r,cy-r,r*2,r*2);
+  circ(g,cx+4,cy+6,r,"rgba(0,0,0,.10)");
+  circ(g,cx,cy,r,P.ring); circ(g,cx,cy,r*0.78,P.face);
   line(g,cx,cy,cx,cy-r*0.55,3,P.ring); line(g,cx,cy,cx+r*0.42,cy,3,P.ring); circ(g,cx,cy,r*0.09,P.ring); }
 // framed picture
-function frameF(g,x,y,w,h,P){ rr(g,x,y,w,h,4,P.wood); rect(g,x+5,y+5,w-10,h-10,P.pic); }
+function frameF(g,x,y,w,h,P){ solidR(x,y,w,h);
+  rect(g,x+4,y+6,w,h,"rgba(0,0,0,.10)");
+  rr(g,x,y,w,h,4,P.wood); rect(g,x+5,y+5,w-10,h-10,P.pic);
+  rect(g,x+5,y+5,w-10,3,"rgba(0,0,0,.14)"); rect(g,x+5,y+5,3,h-10,"rgba(0,0,0,.10)"); }  // inner recess
 // curtain panel (flat folds)
 function curtainF(g,x,y,w,h,c){ rect(g,x,y,w,h,c);                 // solid panel (no gaps)
   const n=5; for(let i=1;i<n;i++){ const sx=x+w*i/n;              // subtle pleat seams
@@ -121,7 +146,8 @@ function curtainF(g,x,y,w,h,c){ rect(g,x,y,w,h,c);                 // solid pane
   rect(g,x-2,y-3,w+4,4,shade(c,14));                              // rod
   rect(g,x,y+h-4,w,4,shade(c,-20)); }                             // single hem
 // steaming mug
-function mugF(g,x,baseY,P){ const w=18,h=15; rr(g,x,baseY-h,w,h,3,P.mug);
+function mugF(g,x,baseY,P){ const w=18,h=15; shadowE(g,x+w/2,baseY,w*0.7,3,0.10);
+  rr(g,x,baseY-h,w,h,3,P.mug); rect(g,x+w-6,baseY-h+2,4,h-4,shade(P.mug,-18));
   g.strokeStyle=P.mug; g.lineWidth=3; g.beginPath(); g.arc(x+w+1,baseY-h+7,5,-1.2,1.2); g.stroke();
   g.strokeStyle="rgba(255,255,255,.5)"; g.lineWidth=2.5;
   g.beginPath(); g.moveTo(x+6,baseY-h-2); g.quadraticCurveTo(x+1,baseY-h-9,x+6,baseY-h-16); g.stroke();
@@ -131,34 +157,71 @@ function shade(hex,amt){ const n=parseInt(hex.slice(1),16);
   let r=(n>>16)+amt, gg=((n>>8)&255)+amt, b=(n&255)+amt;
   r=clamp(r,0,255); gg=clamp(gg,0,255); b=clamp(b,0,255);
   return "#"+((1<<24)+(r<<16)+(gg<<8)+b).toString(16).slice(1); }
-// rolling hills: rounded quadratic humps across the width, filled to the bottom
-function hillsF(g,topFrac,col){ const baseY=H*topFrac; g.fillStyle=col; g.beginPath();
-  g.moveTo(0,H); g.lineTo(0,baseY);
-  const humps=5, hw=W/humps;
-  for(let i=0;i<humps;i++){ const x0=i*hw, up=H*(i%2?0.045:0.065);
-    g.quadraticCurveTo(x0+hw*0.5,baseY-up,x0+hw,baseY); }
-  g.lineTo(W,H); g.closePath(); g.fill(); }
+// soft elliptical contact shadow — grounds any prop on the surface it stands on
+function shadowE(g,x,y,rx,ry,a){ g.fillStyle="rgba(0,0,0,"+a+")"; g.beginPath(); g.ellipse(x,y,rx,ry,0,0,7); g.fill(); }
+// extruded box: front face + lit top + dark right side (fake 3D, light from upper-left)
+function box3d(g,x,y,w,h,d,c){
+  poly(g,[x+w,y, x+w+d,y-d*0.6, x+w+d,y+h-d*0.6, x+w,y+h],shade(c,-26));   // right side (dark)
+  poly(g,[x,y, x+d,y-d*0.6, x+w+d,y-d*0.6, x+w,y],shade(c,20));            // top (lit)
+  rect(g,x,y,w,h,c); }                                                     // front
+// grounded floor: baseboard on the wall, seam, AO band, receding board lines, falloff
+function floorF(g,fy,c){ rect(g,0,fy,W,H-fy,c);
+  rect(g,0,fy-9,W,9,shade(c,32));                                 // baseboard
+  rect(g,0,fy-9,W,2,shade(c,52));                                 // baseboard lip highlight
+  rect(g,0,fy,W,3,shade(c,-30));                                  // seam
+  const ao=g.createLinearGradient(0,fy,0,fy+28);
+  ao.addColorStop(0,"rgba(0,0,0,.12)"); ao.addColorStop(1,"rgba(0,0,0,0)");
+  g.fillStyle=ao; g.fillRect(0,fy+3,W,28);                        // floor turns away from the wall
+  line(g,0,fy+(H-fy)*0.34,W,fy+(H-fy)*0.34,1.5,shade(c,-10));     // board seams, spacing widens
+  line(g,0,fy+(H-fy)*0.68,W,fy+(H-fy)*0.68,1.5,shade(c,-10));     //   toward the viewer
+  const gr=g.createLinearGradient(0,fy,0,H);
+  gr.addColorStop(0,"rgba(0,0,0,0)"); gr.addColorStop(1,"rgba(0,0,0,0.10)");
+  g.fillStyle=gr; g.fillRect(0,fy,W,H-fy); }
+// rolling hills: rounded quadratic humps; optional moonlit rim stroked along the crest
+function hillsF(g,topFrac,col,rim){ const baseY=H*topFrac;
+  const crest=()=>{ g.beginPath(); g.moveTo(0,baseY);
+    const humps=5, hw=W/humps;
+    for(let i=0;i<humps;i++){ const x0=i*hw, up=H*(i%2?0.045:0.065);
+      g.quadraticCurveTo(x0+hw*0.5,baseY-up,x0+hw,baseY); } };
+  crest(); g.lineTo(W,H); g.lineTo(0,H); g.closePath(); g.fillStyle=col; g.fill();
+  if(rim){ crest(); g.strokeStyle=rim; g.lineWidth=3; g.stroke(); } }
 
 /* ===================== 8 flat scenes ===================== */
 // MORNING — big arched window, bright sun + glow, hills, curtains, sill plant + mug
 function sceneSunrise(g,P){
-  const fy=H*0.84; rect(g,0,fy,W,H-fy,P.floor);
+  const fy=H*0.84; floorF(g,fy,P.floor);
   const x0=W*0.31,x1=W*0.69,wtop=H*0.13,sill=H*0.70,mid=(x0+x1)/2,arc=H*0.10;
+  solidR(x0-18,wtop,x1-x0+36,sill-wtop+14);                        // window + sill
+  solidR(x0-W*0.12,wtop+arc,W*0.10,sill-wtop-arc);                 // curtains
+  solidR(x1+W*0.02,wtop+arc,W*0.10,sill-wtop-arc);
   g.save(); g.beginPath(); g.moveTo(x0,sill); g.lineTo(x0,wtop+arc);
   g.quadraticCurveTo(x0,wtop,mid,wtop); g.quadraticCurveTo(x1,wtop,x1,wtop+arc); g.lineTo(x1,sill); g.closePath();
   g.clip();
   const sky=g.createLinearGradient(0,wtop,0,sill); sky.addColorStop(0,P.inSky[0]); sky.addColorStop(1,P.inSky[1]);
   g.fillStyle=sky; g.fillRect(x0,wtop,x1-x0,sill-wtop);
   const sunX=lerp(x0,x1,0.34), sunY=H*0.31; glow(g,sunX,sunY,H*0.20,P.sunGlow); circ(g,sunX,sunY,H*0.072,P.sun);
-  poly(g,[x0-4,sill, x0-4,H*0.60, W*0.42,H*0.55, W*0.55,H*0.60, x1+4,H*0.56, x1+4,sill],P.hills);
+  poly(g,[x0-4,sill, x0-4,H*0.585, W*0.46,H*0.555, W*0.61,H*0.585, x1+4,H*0.565, x1+4,sill],shade(P.hills,52)); // far ridge (hazy)
+  poly(g,[x0-4,sill, x0-4,H*0.60, W*0.42,H*0.55, W*0.55,H*0.60, x1+4,H*0.56, x1+4,sill],P.hills);               // mid dune
+  line(g,x0-4,H*0.60,W*0.42,H*0.552,2,"rgba(255,255,255,.28)");                                                  // sunlit crest
+  poly(g,[x0-4,sill, x0-4,H*0.645, W*0.40,H*0.615, W*0.48,H*0.665, W*0.50,sill],shade(P.hills,-26));             // near dune (occludes)
+  rect(g,x0,wtop,x1-x0,12,"rgba(255,248,230,.5)");                // window reveal: lit top
+  rect(g,x0,wtop,10,sill-wtop,"rgba(255,255,255,.16)");           //   lit left
+  rect(g,x1-12,wtop,12,sill-wtop,"rgba(0,0,0,.10)");              //   shaded right
   g.restore();
   // frame + muntins
   g.strokeStyle=P.frame; g.lineWidth=8; g.beginPath(); g.moveTo(x0,sill); g.lineTo(x0,wtop+arc);
   g.quadraticCurveTo(x0,wtop,mid,wtop); g.quadraticCurveTo(x1,wtop,x1,wtop+arc); g.lineTo(x1,sill); g.stroke();
   g.lineWidth=5; line(g,lerp(x0,x1,0.5),wtop,lerp(x0,x1,0.5),sill,5,P.frame);
   line(g,x0,lerp(wtop,sill,0.5),x1,lerp(wtop,sill,0.5),5,P.frame);
-  rr(g,x0-18,sill,x1-x0+36,14,4,P.frame);
+  box3d(g,x0-18,sill,x1-x0+36,14,10,P.frame);                      // sill with real depth
+  poly(g,[x0+14,fy, x1-14,fy, x1+W*0.05,H, x0-W*0.05,H],"rgba(255,213,150,.18)");  // sun pool on floor
+  for(const rx of [x0-W*0.13, x1+W*0.01]){                                // one short rod per curtain
+    rr(g,rx,wtop+arc-11,W*0.12,8,4,shade(P.frame,-8));
+    rect(g,rx,wtop+arc-11,W*0.12,3,shade(P.frame,22));                    // cylinder highlight
+    circ(g,rx,wtop+arc-7,7,shade(P.frame,-16)); circ(g,rx+W*0.12,wtop+arc-7,7,shade(P.frame,-16)); }
+  rect(g,x0-W*0.12+4,wtop+arc+6,W*0.10,sill-wtop-arc,"rgba(0,0,0,.08)");  // curtain wall shadows
   curtainF(g,x0-W*0.12,wtop+arc,W*0.10,sill-wtop-arc,P.curtain);
+  rect(g,x1+W*0.02+4,wtop+arc+6,W*0.10,sill-wtop-arc,"rgba(0,0,0,.08)");
   curtainF(g,x1+W*0.02,wtop+arc,W*0.10,sill-wtop-arc,P.curtain);
   plantF(g,x0+W*0.05,sill,H*0.14,W*0.05,P); mugF(g,x1-W*0.07,sill,P);
   for(const [bx,by] of [[W*0.40,H*0.26],[W*0.45,H*0.23],[W*0.58,H*0.29]]){
@@ -166,29 +229,53 @@ function sceneSunrise(g,P){
 }
 // MORNING — quiet study: shelves, clock, frames, vines, plants
 function sceneCozy(g,P){
-  const fy=H*0.87; rect(g,0,fy,W,H-fy,P.floor);
+  const fy=H*0.87; floorF(g,fy,P.floor);
   shelfF(g,W*0.015,H*0.15,W*0.155,H*0.66,6,P);
   shelfF(g,W*0.83,H*0.15,W*0.155,H*0.66,6,P);
   clockF(g,W*0.50,H*0.25,H*0.10,P);
   frameF(g,W*0.235,H*0.13,W*0.08,H*0.13,P); frameF(g,W*0.685,H*0.13,W*0.08,H*0.13,P);
   vineF(g,W*0.35,H*0.04,H*0.24,P); vineF(g,W*0.65,H*0.04,H*0.19,P);
   plantF(g,W*0.105,fy,H*0.30,W*0.12,P); plantF(g,W*0.905,fy,H*0.28,W*0.11,P);
+  // reading corner under the clock: rug + console table with books and a mug
+  g.fillStyle=P.rug; g.beginPath(); g.ellipse(W*0.5,fy+H*0.045,W*0.17,H*0.032,0,0,7); g.fill();
+  g.fillStyle=shade(P.rug,20); g.beginPath(); g.ellipse(W*0.5,fy+H*0.045,W*0.17-16,H*0.032-7,0,0,7); g.fill();  // rug border
+  const tx=W*0.42,tw=W*0.16,ty=fy-H*0.115;
+  solidR(tx,ty-32,tw+9,fy-ty+32);                                  // console table + books
+  rect(g,tx+24,ty+H*0.008,6,fy-ty-H*0.035,shade(P.wood,-32));      // back legs (shorter, occluded)
+  rect(g,tx+tw-30,ty+H*0.008,6,fy-ty-H*0.035,shade(P.wood,-32));
+  shadowE(g,tx+11,fy+2,12,3.5,0.12); shadowE(g,tx+tw-11,fy+2,12,3.5,0.12);
+  rect(g,tx+8,ty+H*0.02,7,fy-ty-H*0.02,shade(P.wood,-18)); rect(g,tx+tw-15,ty+H*0.02,7,fy-ty-H*0.02,shade(P.wood,-18));
+  box3d(g,tx,ty,tw,H*0.02,9,P.wood);
+  for(let i=0;i<3;i++) rect(g,tx+tw*0.14,ty-8-i*8,W*0.045,7,P.books[i%P.books.length]);
+  mugF(g,tx+tw*0.62,ty,P);
 }
 // DAY — work desk: window, pinboard notes, shelf+clock, desk, monitor, keyboard, plant, chair
 function sceneDesk(g,P){
-  const fy=H*0.84; rect(g,0,fy,W,H-fy,P.floor);
+  const fy=H*0.84; floorF(g,fy,P.floor);
+  solidR(W*0.05,H*0.15,W*0.19,H*0.30);                             // window + sill
+  solidR(W*0.35,H*0.11,W*0.27,H*0.22);                             // pinboard
+  rect(g,W*0.05+5,H*0.15+7,W*0.19,H*0.29,"rgba(0,0,0,.10)");
   rr(g,W*0.05,H*0.15,W*0.19,H*0.29,6,P.frame); rect(g,W*0.06,H*0.16,W*0.17,H*0.27,P.win);
+  rect(g,W*0.06,H*0.16,W*0.17,4,"rgba(255,255,255,.45)"); rect(g,W*0.06,H*0.16,4,H*0.27,"rgba(255,255,255,.30)");  // bevel: lit top/left
+  rect(g,W*0.06,H*0.43-4,W*0.17,4,"rgba(0,0,0,.16)"); rect(g,W*0.23-4,H*0.16,4,H*0.27,"rgba(0,0,0,.12)");          // bevel: shaded bottom/right
   line(g,W*0.145,H*0.16,W*0.145,H*0.43,4,P.frame); line(g,W*0.06,H*0.295,W*0.23,H*0.295,4,P.frame);
-  rr(g,W*0.04,H*0.435,W*0.21,H*0.014,3,shade(P.frame,12));   // window sill
+  box3d(g,W*0.04,H*0.435,W*0.21,H*0.014,7,P.frame);          // window sill with depth
   // pinboard + sticky notes
+  rect(g,W*0.35+6,H*0.11+8,W*0.27,H*0.22,"rgba(0,0,0,.10)");
   rr(g,W*0.35,H*0.11,W*0.27,H*0.22,6,P.board);
   const notes=P.notes; let k=0;
   for(let r=0;r<2;r++) for(let cc=0;cc<3;cc++){ rr(g,W*0.365+cc*W*0.085,H*0.14+r*H*0.095,W*0.062,H*0.072,3,notes[k++%notes.length]); }
   shelfF(g,W*0.70,H*0.13,W*0.24,H*0.13,1,P); clockF(g,W*0.905,H*0.40,H*0.05,P);
   // desk + legs
-  const dx=W*0.29,dw=W*0.42,dy=H*0.62; rr(g,dx,dy,dw,H*0.045,4,P.desk);
+  const dx=W*0.29,dw=W*0.42,dy=H*0.62;
+  solidR(dx,dy-H*0.19,dw+10,fy-(dy-H*0.19));                       // desk + monitor + chair cluster
+  rect(g,dx+34,dy+H*0.03,8,fy-(dy+H*0.045)-12,shade(P.desk,-30));  // back legs (shorter, occluded)
+  rect(g,dx+dw-42,dy+H*0.03,8,fy-(dy+H*0.045)-12,shade(P.desk,-30));
   rect(g,dx+12,dy+H*0.045,10,fy-(dy+H*0.045),shade(P.desk,-18)); rect(g,dx+dw-22,dy+H*0.045,10,fy-(dy+H*0.045),shade(P.desk,-18));
+  shadowE(g,dx+17,fy+2,16,4,0.12); shadowE(g,dx+dw-17,fy+2,16,4,0.12);   // legs meet the floor
+  box3d(g,dx,dy,dw,H*0.045,10,P.desk);                                   // desktop slab with depth
   // monitor
+  shadowE(g,W*0.49,dy+3,W*0.075,4,0.12);                                 // monitor grounded on desk
   rr(g,W*0.41,dy-H*0.19,W*0.16,H*0.155,5,P.mon); rect(g,W*0.418,dy-H*0.178,W*0.144,H*0.125,P.screen);
   rect(g,W*0.487,dy-H*0.035,W*0.006,H*0.035,P.mon); rect(g,W*0.475,dy-6,W*0.03,6,P.mon);
   // keyboard, mug, books
@@ -199,12 +286,17 @@ function sceneDesk(g,P){
   rr(g,chx,cseat-H*0.16,chw,H*0.17,6,P.chair);
   rect(g,chx-3,cseat,chw+6,H*0.02,shade(P.chair,-8));
   rect(g,chx+2,cseat,5,H*0.06,shade(P.chair,-20)); rect(g,chx+chw-7,cseat,5,H*0.06,shade(P.chair,-20));
+  shadowE(g,chx+4.5,fy+2,10,3,0.12); shadowE(g,chx+chw-4.5,fy+2,10,3,0.12);
   plantF(g,W*0.75,fy,H*0.24,W*0.07,P);
 }
 // DAY — plant studio: jungle of plants + vines + small shelf + clock
 function sceneStudio(g,P){
-  const fy=H*0.89; rect(g,0,fy,W,H-fy,P.floor);
+  const fy=H*0.89; floorF(g,fy,P.floor);
   for(const hx of [0.07,0.19,0.31,0.5,0.69,0.81,0.93]) vineF(g,W*hx,0,rand(H*0.2,H*0.44),P);
+  rect(g,0,H*0.028,W,5,shade(P.wood,14));                          // hanging rail the vines fall from
+  const PB={...P,pot:shade(P.pot,46),potHi:shade(P.potHi,40),leaf:shade(P.leaf,56),leaf2:shade(P.leaf2,56)};
+  for(const px of [0.125,0.255,0.385,0.54,0.70,0.845])             // hazy back row = depth plane
+    plantF(g,W*px,fy-H*0.035,rand(H*0.20,H*0.28),W*rand(0.06,0.08),PB,true);
   for(const px of [0.06,0.19,0.32,0.45,0.63,0.77,0.92]) plantF(g,W*px,fy,rand(H*0.30,H*0.46),W*rand(0.09,0.13),P);
   shelfF(g,W*0.40,H*0.30,W*0.20,H*0.14,2,P);
   for(const bx of [W*0.42,W*0.56]) poly(g,[bx,H*0.44, bx+W*0.02,H*0.44, bx,H*0.47],P.wood);  // shelf brackets
@@ -212,22 +304,42 @@ function sceneStudio(g,P){
 }
 // EVENING — cafe: pendant lamps+glow, counter, espresso, stools, menu, window, plant
 function sceneCafe(g,P){
-  const fy=H*0.87; rect(g,0,fy,W,H-fy,P.floor);
+  const fy=H*0.87; floorF(g,fy,P.floor);
   for(const lx of [W*0.25,W*0.42,W*0.59]){ line(g,lx,0,lx,H*0.15,3,P.cord);
+    solidR(lx-H*0.05,H*0.11,H*0.10,H*0.075);                       // pendant shade
     glow(g,lx,H*0.19,H*0.10,P.lampGlow);
     poly(g,[lx-H*0.045,H*0.165, lx+H*0.045,H*0.165, lx,H*0.115],P.lamp); circ(g,lx,H*0.175,4,P.bulb); }
   const cx=W*0.17,cw=W*0.50,ctop=fy-H*0.22;
-  rr(g,cx,ctop,cw,fy-ctop,5,P.counter); rect(g,cx-8,ctop-6,cw+16,10,P.counterTop);
+  solidR(cx-8,ctop-6,cw+16,fy-ctop+6);                             // counter
+  solidR(cx+cw*0.60,ctop-H*0.12,W*0.14,H*0.06);                    // espresso machine
+  solidR(W*0.76,H*0.15,W*0.19,H*0.23);                             // menu board
+  solidR(W*0.03,H*0.16,W*0.10,H*0.27);                             // window
+  rr(g,cx,ctop,cw,fy-ctop,5,P.counter); rect(g,cx,fy-6,cw,6,shade(P.counter,-16));
+  poly(g,[cx+cw,ctop, cx+cw+10,ctop-6, cx+cw+10,fy-8, cx+cw,fy],shade(P.counter,-22));  // counter end cap
+  box3d(g,cx-8,ctop-6,cw+16,10,8,P.counterTop);                          // countertop slab with depth
+  for(const lx of [W*0.25,W*0.42,W*0.59]){                               // light pools where the lamps land
+    const pg=g.createRadialGradient(lx,ctop-4,0,lx,ctop-4,72);
+    pg.addColorStop(0,"rgba(255,200,110,.30)"); pg.addColorStop(1,"rgba(255,200,110,0)");
+    g.fillStyle=pg; g.save(); g.translate(lx,ctop-4); g.scale(1,0.20);
+    g.beginPath(); g.arc(0,0,72,0,7); g.fill(); g.restore(); }
+  shadowE(g,cx+cw*0.60+W*0.07,ctop-4,W*0.068,4,0.16);                    // machine grounded
   rr(g,cx+cw*0.60,ctop-H*0.12,W*0.14,H*0.12,4,P.machine); rect(g,cx+cw*0.60,ctop-H*0.07,W*0.14,5,shade(P.machine,-20));
+  rect(g,cx+cw*0.60,ctop-H*0.12,W*0.14,4,shade(P.machine,28));           // lit top edge
   circ(g,cx+cw*0.70,ctop-H*0.095,4,P.bulb);
   rect(g,cx+cw*0.60+W*0.05,ctop-H*0.03,W*0.02,H*0.03,shade(P.machine,-25));                    // group head
   line(g,cx+cw*0.60+W*0.13,ctop-H*0.08,cx+cw*0.60+W*0.155,ctop-H*0.02,3,shade(P.machine,25));  // steam wand
-  for(const sx of [cx+cw*0.20,cx+cw*0.55]){                       // stools standing in front of the counter
-    rect(g,sx-2.5,ctop,5,fy-ctop,shade(P.stool,-22));             // post to the floor
-    line(g,sx-9,fy-14,sx+9,fy-14,3,shade(P.stool,-10));           // foot ring
-    g.fillStyle=P.stool; g.beginPath(); g.ellipse(sx,ctop,15,6,0,0,7); g.fill(); }
+  for(const sx of [cx+cw*0.20,cx+cw*0.55]){                       // bar stools in front of the counter
+    const sy=fy-H*0.115;
+    solidR(sx-16,sy-6,32,fy-sy+6);
+    shadowE(g,sx,fy+2,16,4,0.16);                                 // grounded on the floor
+    rect(g,sx-2.5,sy,5,fy-sy,shade(P.stool,-22));                 // post to the floor
+    line(g,sx-9,fy-13,sx+9,fy-13,3,shade(P.stool,-10));           // foot ring
+    g.fillStyle=shade(P.stool,-14); g.beginPath(); g.ellipse(sx,sy+4,15,6,0,0,7); g.fill();  // seat underside
+    g.fillStyle=P.stool; g.beginPath(); g.ellipse(sx,sy,15,6,0,0,7); g.fill(); }             // seat top
+  rect(g,W*0.76+5,H*0.15+7,W*0.19,H*0.23,"rgba(0,0,0,.14)");
   rr(g,W*0.76,H*0.15,W*0.19,H*0.23,5,P.board);
   for(let i=0;i<5;i++) rr(g,W*0.785,H*0.19+i*H*0.035,W*rand(0.08,0.14),4,2,P.menuLine);
+  rect(g,W*0.03+4,H*0.16+6,W*0.10,H*0.26,"rgba(0,0,0,.14)");
   rr(g,W*0.03,H*0.16,W*0.10,H*0.26,5,P.frame); rect(g,W*0.04,H*0.17,W*0.08,H*0.24,P.win);
   line(g,W*0.08,H*0.17,W*0.08,H*0.41,3,P.frame); line(g,W*0.04,H*0.29,W*0.12,H*0.29,3,P.frame);  // muntins
   rr(g,W*0.02,H*0.42,W*0.12,H*0.012,2,shade(P.frame,10));   // sill
@@ -235,18 +347,29 @@ function sceneCafe(g,P){
 }
 // EVENING — reading nook: armchair, floor lamp+glow, side table, plants, window, frame, shelf, rug
 function sceneNook(g,P){
-  const fy=H*0.86; rect(g,0,fy,W,H-fy,P.floor);
+  const fy=H*0.86; floorF(g,fy,P.floor);
   g.fillStyle=P.rug; g.beginPath(); g.ellipse(W*0.40,fy+H*0.055,W*0.22,H*0.035,0,0,7); g.fill();
   const ax=W*0.27, aw=W*0.18, ay=fy-H*0.30, ah=H*0.30;
+  solidR(ax-aw*0.08,ay,aw*1.16,ah);                                   // armchair
+  solidR(W*0.61,fy-H*0.17,W*0.07,H*0.17);                             // side table
+  solidR(W*0.05,H*0.12,W*0.13,H*0.22);                                // window
+  shadowE(g,ax+aw*0.5,fy+3,aw*0.72,9,0.13);                           // armchair grounded
   rr(g,ax,ay,aw,ah*0.66,8,P.chair);                                   // back first
   rr(g,ax-aw*0.08,ay+ah*0.5,aw*1.16,ah*0.5,8,shade(P.chair,10));      // seat
   rr(g,ax-aw*0.08,ay+ah*0.30,aw*0.20,ah*0.72,6,shade(P.chair,-16));   // arms drawn LAST (in front)
   rr(g,ax+aw*0.88,ay+ah*0.30,aw*0.20,ah*0.72,6,shade(P.chair,-16));
-  const lx=W*0.53; line(g,lx,fy,lx,fy-H*0.40,4,P.frame);
+  const lx=W*0.53; solidR(lx-26,fy-H*0.40,52,H*0.40);                 // floor lamp
+  shadowE(g,lx,fy+2,16,4,0.13);
+  line(g,lx,fy,lx,fy-H*0.40,4,P.frame);
+  poly(g,[lx-12,fy, lx+12,fy, lx+7,fy-5, lx-7,fy-5],shade(P.frame,-10));   // lamp base
   glow(g,lx,fy-H*0.40,H*0.13,P.lampGlow);
   poly(g,[lx-26,fy-H*0.40, lx+26,fy-H*0.40, lx+15,fy-H*0.33, lx-15,fy-H*0.33],P.lamp);
-  rr(g,W*0.61,fy-H*0.13,W*0.06,H*0.13,4,P.wood); rect(g,W*0.625,fy-H*0.17,W*0.022,H*0.045,P.mug);
+  poly(g,[lx-15,fy-H*0.33, lx+15,fy-H*0.33, lx+13,fy-H*0.325, lx-13,fy-H*0.325],shade(P.lamp,-18));  // shade lip
+  shadowE(g,W*0.64,fy+2,W*0.036,4,0.13);
+  box3d(g,W*0.61,fy-H*0.13,W*0.06,H*0.13,8,P.wood);                       // side table with depth
+  rect(g,W*0.625,fy-H*0.17,W*0.022,H*0.045,P.mug); rect(g,W*0.641,fy-H*0.17,W*0.006,H*0.045,shade(P.mug,-20));
   plantF(g,W*0.80,fy,H*0.28,W*0.085,P); plantF(g,W*0.46,fy,H*0.12,W*0.05,P);
+  rect(g,W*0.05+4,H*0.12+6,W*0.13,H*0.22,"rgba(0,0,0,.10)");
   rr(g,W*0.05,H*0.12,W*0.13,H*0.22,5,P.frame); rect(g,W*0.06,H*0.13,W*0.11,H*0.20,P.win);
   line(g,W*0.115,H*0.13,W*0.115,H*0.33,3,P.frame); line(g,W*0.06,H*0.23,W*0.17,H*0.23,3,P.frame);
   frameF(g,W*0.64,H*0.16,W*0.08,H*0.12,P);
@@ -254,15 +377,30 @@ function sceneNook(g,P){
 }
 // NIGHT — city: building blocks with lit windows, moon+glow, stars
 function sceneCity(g,P){
-  let x=0, i=0;
-  while(x<W){ const bw=rand(W*0.05,W*0.11), bh=rand(H*0.32,H*0.72), by=H-bh;
-    rr(g,x,by,bw,bh+10,4,P.build[i++%P.build.length]);
+  for(let s=0;s<80;s++){ const sx=rand(0,W), sy=rand(0,H*0.55);
+    if(Math.hypot(sx-W*0.84,sy-H*0.16)>48) rect(g,sx,sy,2,2,P.star); }   // sky first — buildings occlude it
+  glow(g,W*0.84,H*0.16,H*0.12,P.moonGlow); circ(g,W*0.84,H*0.16,38,P.moon);
+  circ(g,W*0.84-12,H*0.16-6,5,shade(P.moon,-18)); circ(g,W*0.84+10,H*0.16+9,4,shade(P.moon,-14));  // craters
+  let fx=0;                                                              // dim far skyline = depth layer
+  while(fx<W){ const bw=rand(W*0.05,W*0.10), bh=rand(H*0.45,H*0.80);
+    rect(g,fx,H-bh,bw,bh,P.far); fx+=bw+rand(2,8); }
+  let x=-6, i=0;
+  while(x<W){ const bw=rand(W*0.05,W*0.11), bh=rand(H*0.32,H*0.72), by=H-bh,
+      col=P.build[i%P.build.length], d=Math.max(7,bw*0.13);
+    poly(g,[x,by, x+d,by-d*0.5, x+bw+d,by-d*0.5, x+bw,by],shade(col,18));  // moonlit roof
+    poly(g,[x+bw,by, x+bw+d,by-d*0.5, x+bw+d,H, x+bw,H],shade(col,-8));    // side face
+    rect(g,x,by,bw,H-by,col);                                              // front face
+    if(i%3===0){ line(g,x+bw*0.28,by-d*0.5,x+bw*0.28,by-d*0.5-16,2.5,shade(col,26));
+      circ(g,x+bw*0.28,by-d*0.5-17,2.5,P.lit); }                           // antenna + beacon
+    else if(i%3===1){ rr(g,x+bw*0.5,by-d*0.5-12,15,12,2,shade(col,30));
+      rect(g,x+bw*0.5+2,by-d*0.5,3,3,shade(col,16)); rect(g,x+bw*0.5+10,by-d*0.5,3,3,shade(col,16)); }  // water tank
     for(let wy=by+14;wy<H-16;wy+=20) for(let wx=x+8;wx<x+bw-10;wx+=16){
       rect(g,wx,wy,7,10,Math.random()<0.5?P.lit:P.dark); }
-    x+=bw+rand(3,9); }
-  for(let s=0;s<80;s++){ const sx=rand(0,W), sy=rand(0,H*0.5);
-    if(Math.hypot(sx-W*0.84,sy-H*0.16)>48) rect(g,sx,sy,2,2,P.star); }   // stars first, none inside the moon
-  glow(g,W*0.84,H*0.16,H*0.12,P.moonGlow); circ(g,W*0.84,H*0.16,38,P.moon);
+    if(x>W*0.5){ line(g,x,by,x+bw,by,2,"rgba(185,200,232,.5)");          // moonlit rim (moon side)
+      line(g,x+bw,by,x+bw,by+40,2,"rgba(185,200,232,.32)"); }
+    x+=bw+rand(3,9); i++; }
+  rect(g,0,H-42,W,42,"#0B1120");                                         // street plane anchors the towers
+  rect(g,0,H-42,W,2,"#1C2742");                                          // curb line
 }
 // NIGHT — starry: moon+glow, dense stars, rolling hills
 function sceneStars(g,P){
@@ -271,8 +409,23 @@ function sceneStars(g,P){
   for(let i=0;i<5;i++){ const sx=rand(W*0.1,W*0.9), sy=rand(H*0.1,H*0.45);
     line(g,sx-6,sy,sx+6,sy,2,P.star); line(g,sx,sy-6,sx,sy+6,2,P.star); }
   glow(g,W*0.74,H*0.23,H*0.20,P.moonGlow); circ(g,W*0.74,H*0.23,H*0.11,P.moon);
-  circ(g,W*0.70,H*0.20,H*0.085,P.moonBite);                        // crescent bite inside the disc
-  hillsF(g,0.86,P.hills2); hillsF(g,0.92,P.hills);                 // rolling hills, not triangles
+  g.save(); g.beginPath(); g.arc(W*0.74,H*0.23,H*0.11,0,7); g.clip();    // crescent: bite punched in
+  const sg=g.createLinearGradient(0,0,0,H); sg.addColorStop(0,P.bg[0]); sg.addColorStop(1,P.bg[1]);
+  g.fillStyle=sg; g.beginPath(); g.arc(W*0.70,H*0.20,H*0.085,0,7); g.fill(); g.restore();  // sky-true shadow
+  const hg=g.createLinearGradient(0,H*0.66,0,H*0.82);              // faint horizon glow above the ridges
+  hg.addColorStop(0,"rgba(190,170,220,0)"); hg.addColorStop(1,"rgba(190,170,220,.15)");
+  g.fillStyle=hg; g.fillRect(0,H*0.66,W,H*0.16);
+  hillsF(g,0.82,P.hills3,"rgba(200,180,230,.35)");                 // three depth layers, moonlit crests
+  hillsF(g,0.86,P.hills2,"rgba(180,160,215,.30)");
+  hillsF(g,0.92,P.hills,"rgba(160,145,205,.30)");
+  for(const [px,s] of [[0.085,1],[0.135,0.72],[0.115,0.55],[0.86,0.9],[0.915,0.65]]){   // pine cluster silhouettes
+    const bx=W*px, byy=H*0.935, hh=H*0.065*s;
+    rect(g,bx-2*s,byy-4,4*s,6,"#171233");
+    poly(g,[bx,byy-hh, bx-11*s,byy-hh*0.42, bx+11*s,byy-hh*0.42],"#171233");
+    poly(g,[bx,byy-hh*0.66, bx-14*s,byy-2, bx+14*s,byy-2],"#171233"); }
+  for(const [px,s] of [[0.44,0.5],[0.485,0.38]]){                  // smaller pines on the mid ridge
+    const bx=W*px, byy=H*0.875, hh=H*0.05*s*1.4;
+    poly(g,[bx,byy-hh, bx-9*s,byy, bx+9*s,byy],"#1F1A42"); }
 }
 
 // each theme: a flat, bright, high-contrast scene with its own palette
@@ -284,7 +437,7 @@ const THEMES=[
   { name:"quiet study", time:"morning", draw:sceneCozy, pal:{
     bg:["#E4C7A8","#D6B085"], floor:"#B98B62", wood:"#8B5E3C", woodIn:"#6E482D",
     books:["#E76F51","#2A9D8F","#E9C46A","#457B9D","#BC4749"], ring:"#264653", face:"#F1FAEE", pic:"#83C5BE",
-    pot:"#BC6C25", potHi:"#D98E52", leaf:"#588157", leaf2:"#A3B18A" } },
+    pot:"#BC6C25", potHi:"#D98E52", leaf:"#588157", leaf2:"#A3B18A", rug:"#C1683F", mug:"#457B9D" } },
   { name:"work desk", time:"day", draw:sceneDesk, pal:{
     bg:["#2FBDB0","#34C0B3"], floor:"#FFD6A5", frame:"#22333B", win:"#BFE6F2", board:"#3A2E28",
     notes:["#FFADAD","#FDFFB6","#A0C4FF","#BDB2FF","#CAFFBF","#FFC6FF"], desk:"#E76F51",
@@ -306,15 +459,16 @@ const THEMES=[
     woodIn:"#503722", books:["#E9C46A","#2A9D8F","#E76F51"], ring:"#264653", face:"#F1FAEE", pic:"#2A9D8F",
     pot:"#6C4A32", potHi:"#8C6244", leaf:"#588157", leaf2:"#A3B18A" } },
   { name:"city night", time:"night", draw:sceneCity, pal:{
-    bg:["#14213D","#3A506B"], build:["#0E1626","#141F34","#1A2942","#0B1220"], lit:"#FFD166", dark:"#0E1726",
+    bg:["#14213D","#3A506B"], build:["#0E1626","#141F34","#1A2942","#0B1220"], far:"#232F4C", lit:"#FFD166", dark:"#0E1726",
     moon:"#F1FAEE", moonGlow:"rgba(255,243,176,.6)", star:"#FFFFFF" } },
   { name:"starry night", time:"night", draw:sceneStars, pal:{
     bg:["#1D2B53","#4A2E6B"], moon:"#FDF0D5", moonGlow:"rgba(253,240,213,.55)", star:"#FFFFFF",
-    hills:"#0E1330", hills2:"#2A2350", moonBite:"#232B55" } },
+    hills:"#0E1330", hills2:"#2A2350", hills3:"#453A6E" } },
 ];
 let themeI=0;
 function buildBg(){
   const T=THEMES[themeI], P=T.pal;
+  SOLIDS.length=0;                                                  // rebuild collision map with the scene
   const grd=bgx.createLinearGradient(0,0,0,H); grd.addColorStop(0,P.bg[0]); grd.addColorStop(1,P.bg[1]);
   bgx.fillStyle=grd; bgx.fillRect(0,0,W,H);
   bgx.lineJoin="round"; bgx.lineCap="round";
@@ -322,6 +476,7 @@ function buildBg(){
   const vg=bgx.createRadialGradient(W/2,H*0.5,0,W/2,H*0.5,Math.max(W,H)*0.72);
   vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(0,0,0,0.09)");
   bgx.fillStyle=vg; bgx.fillRect(0,0,W,H);
+  pickTarget();                                                   // solids changed — never chase a stale target
 }
 function showThemeName(){ const el=document.getElementById("theme"); el.textContent=THEMES[themeI].name; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),1800); }
 function switchTheme(){ themeI=(themeI+1)%THEMES.length; buildBg(); showThemeName(); }
@@ -362,19 +517,37 @@ function drawEye(ox,oy,S,ex,blink){
   ctx.fillRect(ox+(ex+1)*S, oy+13*S, 2*S, S);
 }
 
-const c={x:0,y:0,vx:0,vy:0,facing:1,faceSm:1,phase:0,speed01:0,state:"walk",pauseT:0,blinkT:rand(2,6),blink:0,target:{x:0,y:0}};
-function pickTarget(){ c.target={x:rand(CFG.MARGIN,W-CFG.MARGIN),y:rand(CFG.MARGIN,H-CFG.MARGIN)}; }
+const c={x:0,y:0,vx:0,vy:0,facing:1,faceSm:1,phase:0,speed01:0,state:"walk",pauseT:0,walkT:0,stuckT:0,
+  blinkT:rand(2,6),blink:0,gaze:0,gazeT:rand(2,5),arm:0,armT:rand(6,14),target:{x:0,y:0}};
+function pickTarget(){ c.target=freeSpot(); c.walkT=0; }
 function update(dt,t){
   if(c.state==="walk"){ const dx=c.target.x-c.x,dy=c.target.y-c.y,d=Math.hypot(dx,dy);
-    if(d<CFG.ARRIVE){ c.state="pause"; c.pauseT=rand(...CFG.PAUSE); c.vx=c.vy=0; }
-    else{ let sp=CFG.MAX_SPEED*Math.min(d/CFG.SLOW_RADIUS,1); if(bubbleOn) sp*=0.35; c.vx=dx/d*sp; c.vy=dy/d*sp; } }
-  else { c.pauseT-=dt; if(c.pauseT<=0){ c.state="walk"; pickTarget(); } }
-  c.x=clamp(c.x+c.vx*dt,CFG.MARGIN,W-CFG.MARGIN); c.y=clamp(c.y+c.vy*dt,CFG.MARGIN,H-CFG.MARGIN);
+    c.walkT+=dt;
+    if(d<CFG.ARRIVE || c.walkT>25){ c.state="pause"; c.pauseT=rand(...CFG.PAUSE); }
+    else{ let sp=CFG.MAX_SPEED*Math.min(d/CFG.SLOW_RADIUS,1); if(bubbleOn) sp*=0.35;
+      const k=1-Math.exp(-6*dt);                                 // eased acceleration (dt-normalized)
+      c.vx=lerp(c.vx,dx/d*sp,k); c.vy=lerp(c.vy,dy/d*sp,k); } }
+  else { c.vx*=Math.exp(-9*dt); c.vy*=Math.exp(-9*dt);           // soft stop, no popping
+    c.pauseT-=dt; if(c.pauseT<=0){ c.state="walk"; pickTarget(); } }
+  const pad=PAD(), px=c.x, py=c.y,
+        nx=clamp(c.x+c.vx*dt,CFG.MARGIN,W-CFG.MARGIN),
+        ny=clamp(c.y+c.vy*dt,CFG.MARGIN,H-CFG.MARGIN);
+  if(inSolid(c.x,c.y,pad) || !inSolid(nx,ny,pad)){ c.x=nx; c.y=ny; }   // free move (or walking out)
+  else if(!inSolid(nx,c.y,pad)) c.x=nx;                                // slide along the obstacle
+  else if(!inSolid(c.x,ny,pad)) c.y=ny;
+  const moved=Math.hypot(c.x-px,c.y-py), want=Math.hypot(c.vx,c.vy)*dt;
+  if(c.state==="walk" && want>0.001 && moved<want*0.35){               // pressing against furniture
+    c.stuckT+=dt; if(c.stuckT>0.5){ c.stuckT=0; c.state="pause"; c.pauseT=rand(0.4,1.0); pickTarget(); } }
+  else c.stuckT=0;
   if(Math.abs(c.vx)>3) c.facing=Math.sign(c.vx);
-  c.faceSm=lerp(c.faceSm,c.facing,0.16);                         // smoother turn easing
-  c.speed01=lerp(c.speed01,clamp(Math.hypot(c.vx,c.vy)/CFG.MAX_SPEED,0,1),0.12);
+  c.faceSm=lerp(c.faceSm,c.facing,1-Math.exp(-9*dt));            // frame-rate-independent turn
+  c.speed01=lerp(c.speed01,clamp(moved/Math.max(dt,1e-4)/CFG.MAX_SPEED,0,1),1-Math.exp(-7*dt));  // gait tracks real motion, not blocked velocity
   c.phase+=CFG.STEP_FREQ*c.speed01*dt;
-  c.blinkT-=dt; if(c.blinkT<=0){ c.blink=1; if(c.blinkT<-0.09){ c.blink=0; c.blinkT=rand(3.5,8);} }
+  if(c.arm>0) c.arm=Math.max(0,c.arm-dt/1.6);                    // wave gesture winds down
+  else { c.armT-=dt; if(c.armT<=0){ if(c.state==="pause") c.arm=1; c.armT=rand(7,15); } }
+  c.blinkT-=dt; if(c.blinkT<=0){ c.blink=1;
+    if(c.blinkT<-0.09){ c.blink=0; c.blinkT=Math.random()<0.22?0.22:rand(3.5,8); } }   // sometimes a double-blink
+  c.gazeT-=dt; if(c.gazeT<=0){ c.gaze=c.state==="pause"?ri(-1,1):0; c.gazeT=rand(1.5,4); }  // glance around while pausing
 }
 // smoother gait: diagonal-pair legs that LIFT and SWING (a walk cycle), gentle lean + bob
 const LEG_X=[6,11,16,21], LEG_PHASE=[0,Math.PI,Math.PI,0];   // diagonal trot pairing
@@ -388,7 +561,7 @@ function draw(t){
   ctx.beginPath(); ctx.arc(0,0,LW*0.40*S*0.5,0,7); ctx.fill(); ctx.restore();
 
   ctx.save(); ctx.translate(cx,cy); ctx.scale(c.faceSm,1);
-  ctx.rotate(Math.sin(gait)*CFG.LEAN*sp);                       // gentle lean, not a hard waddle
+  ctx.rotate(Math.sin(gait)*CFG.LEAN*sp + Math.sin(t*0.9)*0.012*(1-sp));  // gentle lean + idle sway
   ctx.imageSmoothingEnabled=false;
   const ox=-LW/2*S, oy=-LH/2*S;
   // legs: each lifts off the ground and swings forward through its cycle
@@ -402,7 +575,12 @@ function draw(t){
     ctx.fillStyle=COL.lo;   ctx.fillRect(fx, footY, 3*S, S);
   });
   ctx.drawImage(cre, ox, oy, LW*S, LH*S);
-  drawEye(ox,oy,S,10,c.blink); drawEye(ox,oy,S,16,c.blink);
+  if(c.arm>0){ const p=1-c.arm, env=Math.sin(p*Math.PI), wob=Math.sin(p*Math.PI*4)*1.4*env;
+    if(env>0.12){ ctx.fillStyle=COL.clay;                          // little wave: arm lifts, paw wobbles
+      ctx.fillRect(ox+(25+env)*S, oy+(18-6*env)*S, 3*S, (4+2*env)*S);
+      ctx.fillStyle=COL.hi;
+      ctx.fillRect(ox+(25.5+env+wob)*S, oy+(15.5-7*env)*S, 3*S, 3*S); } }
+  drawEye(ox,oy,S,10+c.gaze,c.blink); drawEye(ox,oy,S,16+c.gaze,c.blink);
   ctx.restore();
 }
 
@@ -410,6 +588,7 @@ function draw(t){
 const bubbleEl=document.getElementById("bubble");
 let bubbleOn=false,bubbleHideAt=0,typing=null; const sm={x:0,y:0,init:false};
 function say(text){ clearInterval(typing); bubbleEl.classList.add("show"); bubbleOn=true; let i=0; bubbleEl.textContent="";
+  c.blinkT=Math.min(c.blinkT,0.01); c.gaze=0; c.gazeT=rand(1.5,4);   // perk up when speaking
   typing=setInterval(()=>{ i++; bubbleEl.textContent=text.slice(0,i); if(i>=text.length) clearInterval(typing); },26);
   bubbleHideAt=performance.now()+rand(...CFG.BUBBLE_HOLD)+text.length*28; }
 function positionBubble(){ if(!sm.init){ sm.x=c.x; sm.y=c.y; sm.init=true; }
@@ -446,7 +625,7 @@ addEventListener("resize",resize); resize();
 tickTime();
 const forceT=new URLSearchParams(location.search).get("t");
 if(forceT!==null){ themeI=((+forceT%THEMES.length)+THEMES.length)%THEMES.length; buildBg(); showThemeName(); }
-c.x=W*0.5; c.y=H*0.55; pickTarget(); requestAnimationFrame(loop);
+const s0=freeSpot(); c.x=s0.x; c.y=s0.y; pickTarget(); requestAnimationFrame(loop);
 setTimeout(()=>say("i'm here 🎧 click to change the theme"),900);
 </script>
 </body>
